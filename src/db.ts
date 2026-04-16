@@ -94,6 +94,14 @@ function dumpAll(db: Db): string {
   return JSON.stringify({ schema: schemaRows, data, sequences });
 }
 
+/**
+ * Structural equality of two SQLite databases by their user-visible content.
+ *
+ * Compares: schema (tables, indices, views, triggers from `sqlite_master`),
+ * every user table's rows sorted by all columns, and `sqlite_sequence`
+ * (AUTOINCREMENT counters). Ignores rowid ordering and the internal
+ * `__sqlgit_meta__` table.
+ */
 export function compareDbs(a: Db, b: Db): boolean {
   return dumpAll(a) === dumpAll(b);
 }
