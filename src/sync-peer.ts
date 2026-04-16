@@ -5,6 +5,7 @@ import { loadSnapshotToMemory } from "./snapshot.ts";
 import { getSnapshotHead } from "./db.ts";
 import { applyAction } from "./apply.ts";
 import { checkConflict, type ConflictResult } from "./conflict.ts";
+import { assertFilesConsistent } from "./file-sync.ts";
 import type { Store } from "./store.ts";
 import type {
   ConflictContext,
@@ -53,6 +54,7 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
     s.close();
     return h;
   })();
+  assertFilesConsistent(masterLog, snapHead);
   if (snapHead > newMasterHead) newMasterHead = snapHead;
 
   const incorporated = new Set<number>();

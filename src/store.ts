@@ -4,6 +4,7 @@ import { peerLogPath, peersDir, snapshotPath } from "./paths.ts";
 import { loadSnapshotToMemory } from "./snapshot.ts";
 import { getSnapshotHead } from "./db.ts";
 import { applyAction } from "./apply.ts";
+import { assertFilesConsistent } from "./file-sync.ts";
 import { runMasterSync } from "./sync-master.ts";
 import { runPeerSync } from "./sync-peer.ts";
 import type {
@@ -22,6 +23,17 @@ import type {
  * `<root>/peers/<peerId>.jsonl` logs. One peer in the cluster is designated
  * master (`peerId === masterId`); its log is the canonical ordering and only
  * the master writes `snapshot.db`.
+ *
+ * **File-sync model.** The library never watches or pushes files itself —
+ * the `<root>` directory is expected to be replicated between hosts by an
+ * external syncer (Syncthing, Dropbox, `rsync`, a shared volume, …). Each
+ * peer only writes its own log; only the master writes `snapshot.db`; all
+ * writes are atomic (tmp-then-rename) so readers on other hosts never see
+ * partial files. Analogously to `git fetch` + `git rebase origin/master`:
+ * file sync = fetch, `store.sync()` = rebase/integrate. If the file syncer
+ * has delivered an updated trimmed master log before its matching snapshot,
+ * {@link Store.open} or {@link Store.sync} throws `FileSyncLagError` — the
+ * caller should retry after the syncer settles.
  *
  * Lifecycle: `Store.open(...)` → `submit(...)` / `sync(...)` → `close()`.
  */
@@ -143,6 +155,12 @@ export class Store {
     const peerLog: PeerLogEntry[] = readLog(ownLogPath);
     const masterLogDisk: MasterLogEntry[] = readLog(peerLogPath(opts.root, opts.masterId));
     const snapshotHead = getSnapshotHead(db);
+    try {
+      assertFilesConsistent(masterLogDisk, snapshotHead);
+    } catch (err) {
+      db.close();
+      throw err;
+    }
     const hasPendingActions = peerLog.some((e) => e.kind === "action");
     let lastSeen = snapshotHead;
     if (hasPendingActions) {

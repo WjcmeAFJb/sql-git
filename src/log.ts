@@ -23,8 +23,16 @@ export function readLog<T>(path: string): T[] {
   if (!existsSync(path)) return [];
   const raw = readFileSync(path, "utf8");
   if (!raw) return [];
+  // Only parse lines terminated by a newline. Any trailing content past the
+  // last newline is a partial write (crash, or an upstream file syncer like
+  // Syncthing delivering a mid-append file) and is intentionally dropped —
+  // the writer will produce a complete version on its next flush.
+  const lastNewline = raw.lastIndexOf("\n");
+  if (lastNewline < 0) return [];
+  const complete = raw.slice(0, lastNewline);
+  if (!complete) return [];
   const out: T[] = [];
-  for (const line of raw.split("\n")) {
+  for (const line of complete.split("\n")) {
     if (!line) continue;
     out.push(JSON.parse(line) as T);
   }

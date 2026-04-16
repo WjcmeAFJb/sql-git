@@ -1,4 +1,5 @@
 export { Store } from "./store.ts";
+export { FileSyncLagError } from "./file-sync.ts";
 export type {
   ActionFn,
   ActionRegistry,
