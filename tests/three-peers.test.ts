@@ -227,6 +227,73 @@ describe("three peers", () => {
     bob.close();
   });
 
+  it("three-way concurrent row overwrite: master-own + two peer forces, only one peer-force wins", async () => {
+    const root = makeRoot();
+    const actions = buildActions();
+
+    const master = openStore(root, "master", "master", actions);
+    master.submit(INIT_SCHEMA, {});
+    master.submit("set", { k: "row", v: "1" });
+    await master.sync();
+
+    const alice = openStore(root, "alice", "master", actions);
+    const bob = openStore(root, "bob", "master", actions);
+    expect(readKV(alice)).toEqual({ row: "1" });
+    expect(readKV(bob)).toEqual({ row: "1" });
+
+    // All three submit concurrently (no intervening syncs).
+    master.submit("set", { k: "row", v: "3" });
+    alice.submit("set", { k: "row", v: "5" });
+    bob.submit("set", { k: "row", v: "4" });
+
+    // Master.sync: alice and bob both non-commute with master's own set=3, both stall.
+    const m1 = await master.sync();
+    expect(m1.applied).toBe(0);
+    expect(m1.skipped).toBe(2);
+    expect(readKV(master)).toEqual({ row: "3" });
+
+    // Alice forces.
+    const aReport = await alice.sync({ onConflict: () => "force" });
+    expect(aReport.forced).toBe(1);
+    expect(readKV(alice)).toEqual({ row: "5" });
+
+    // Bob forces.
+    const bReport = await bob.sync({ onConflict: () => "force" });
+    expect(bReport.forced).toBe(1);
+    expect(readKV(bob)).toEqual({ row: "4" });
+
+    // Master.sync: alice wins alphabetically (relaxed force check passes — no other peer's
+    // action is between her baseMasterSeq and master head). Bob's force check now sees
+    // alice's incorporation as a same-master-head-but-other-peer interleaving, so rejects.
+    const m2 = await master.sync();
+    expect(m2.applied).toBe(1);
+    expect(m2.skipped).toBe(1);
+    expect(readKV(master)).toEqual({ row: "5" });
+
+    // Bob re-syncs. His local state had row=4; he now observes master=5 with alice's entry
+    // interleaved past his force's base → conflict re-reported as non_commutative.
+    const conflictKinds: string[] = [];
+    const bReport2 = await bob.sync({
+      onConflict: (ctx) => {
+        conflictKinds.push(ctx.kind);
+        return "drop";
+      },
+    });
+    expect(conflictKinds).toEqual(["non_commutative"]);
+    expect(bReport2.dropped).toBe(1);
+    expect(readKV(bob)).toEqual({ row: "5" });
+
+    // Final convergence.
+    await alice.sync();
+    await master.sync();
+    expect(readKV(master)).toEqual({ row: "5" });
+    expect(readKV(alice)).toEqual({ row: "5" });
+
+    master.close();
+    alice.close();
+    bob.close();
+  });
+
   it("rewrite-and-retry: peer drops conflicting action, submits a new one, master incorporates it", async () => {
     const root = makeRoot();
     const actions = buildActions();
