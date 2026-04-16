@@ -92,6 +92,13 @@ export type ConflictKind = "error" | "non_commutative";
  * and `rebasedDb` are read-only scratch databases (the action's original
  * base state and the current rebased master state, respectively) — the
  * resolver may inspect them but must not mutate.
+ *
+ * The resolver may also call {@link ConflictContext.submit} to append new
+ * peer actions (like `git commit` during interactive rebase) — those actions
+ * are applied to the in-flight rebased state and committed to the peer's log
+ * regardless of whether the original action ends up applied, dropped, or
+ * forced. Combined with `"retry"`, this lets the resolver unblock a failing
+ * action (e.g., top up a balance) before re-attempting it.
  */
 export type ConflictContext = {
   /** The peer-local action entry in conflict. */
@@ -106,6 +113,13 @@ export type ConflictContext = {
   baseDb: Database;
   /** Read-only db at the new master head. Do not mutate. */
   rebasedDb: Database;
+  /**
+   * Queue a new peer action to be committed before the current one retries.
+   * Applied immediately to the rebased working db; persisted into the peer's
+   * log on return from the resolver. Throws if `name` isn't registered, or
+   * if the action throws when applied. Meant to be followed by `"retry"`.
+   */
+  submit(name: string, params: unknown): void;
 };
 
 /**
@@ -114,8 +128,11 @@ export type ConflictContext = {
  * - `"force"`: keep it, tagged `force: true` with `baseMasterSeq = <new head>`.
  *   Master will accept iff its head hasn't moved past that seq when it next
  *   processes this peer. Only valid for `"non_commutative"` conflicts.
+ * - `"retry"`: re-check the action against the new state (after any
+ *   `ctx.submit(...)` calls have been applied). Requires at least one
+ *   `ctx.submit(...)` call, otherwise no progress is made and sync throws.
  */
-export type Resolution = "drop" | "force";
+export type Resolution = "drop" | "force" | "retry";
 
 /** Callback invoked by peer sync on each conflict. May be sync or async. */
 export type Resolver = (ctx: ConflictContext) => Resolution | Promise<Resolution>;

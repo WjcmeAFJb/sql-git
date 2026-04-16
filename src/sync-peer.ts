@@ -7,6 +7,7 @@ import { applyAction } from "./apply.ts";
 import { checkConflict, type ConflictResult } from "./conflict.ts";
 import type { Store } from "./store.ts";
 import type {
+  ConflictContext,
   MasterActionEntry,
   MasterLogEntry,
   PeerActionEntry,
@@ -74,56 +75,99 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
 
   const kept: PeerActionEntry[] = [];
 
-  for (const action of ownActions) {
-    if (incorporated.has(action.seq)) continue;
+  for (const origAction of ownActions) {
+    if (incorporated.has(origAction.seq)) continue;
 
-    const suffix = masterActions.filter((e) => e.seq > action.baseMasterSeq);
+    let action: PeerActionEntry = origAction;
 
-    let conflict: ConflictResult;
-    let baseDbForResolver: Db | undefined;
-
-    if (action.force) {
-      if (newMasterHead === action.baseMasterSeq) {
-        conflict = { ok: true };
+    while (true) {
+      const suffix = masterActions.filter((e) => e.seq > action.baseMasterSeq);
+      let baseDb: Db;
+      let baseIsRebased = false;
+      if (suffix.length === 0) {
+        baseDb = rebasedDb;
+        baseIsRebased = true;
       } else {
-        conflict = { ok: false, kind: "non_commutative" };
+        baseDb = buildMasterState(masterLog, snapshotPath(store.root), action.baseMasterSeq, store.actions).db;
       }
-    } else {
-      const baseDb =
-        suffix.length === 0
-          ? rebasedDb
-          : buildMasterState(masterLog, snapshotPath(store.root), action.baseMasterSeq, store.actions).db;
-      conflict = checkConflict({
-        currentDb: rebasedDb,
-        baseDb,
-        masterSuffix: suffix,
-        actions: store.actions,
-        action,
-      });
-      baseDbForResolver = baseDb;
-    }
 
-    if (!conflict.ok) {
+      let conflict: ConflictResult;
+      if (action.force) {
+        // Relaxed force boundary — see matching logic in sync-master.ts.
+        const interleavedFromOthers = masterActions.some(
+          (e) => e.seq > action.baseMasterSeq && e.source.peer !== store.peerId,
+        );
+        conflict = interleavedFromOthers
+          ? { ok: false, kind: "non_commutative" }
+          : { ok: true };
+      } else {
+        conflict = checkConflict({
+          currentDb: rebasedDb,
+          baseDb,
+          masterSuffix: suffix,
+          actions: store.actions,
+          action,
+        });
+      }
+
+      if (conflict.ok) {
+        applyAction(rebasedDb, store.actions, action.name, action.params);
+        kept.push({
+          kind: "action",
+          seq: action.seq,
+          name: action.name,
+          params: action.params,
+          baseMasterSeq: newMasterHead,
+          ...(action.force ? { force: true } : {}),
+        });
+        report.applied++;
+        if (!baseIsRebased) baseDb.close();
+        break;
+      }
+
       if (!resolver) {
-        if (baseDbForResolver && baseDbForResolver !== rebasedDb) baseDbForResolver.close();
+        if (!baseIsRebased) baseDb.close();
         rebasedDb.close();
         throw new Error(
           `Conflict on action seq=${action.seq} (${action.name}) but no onConflict resolver was provided`,
         );
       }
-      const resolution = await resolver({
+
+      const prepended: PeerActionEntry[] = [];
+      const ctx: ConflictContext = {
         action,
         kind: conflict.kind,
         error: conflict.kind === "error" ? conflict.error : undefined,
         masterSuffix: suffix,
-        baseDb: baseDbForResolver ?? rebasedDb,
+        baseDb,
         rebasedDb,
-      });
-      if (baseDbForResolver && baseDbForResolver !== rebasedDb) baseDbForResolver.close();
+        submit(name: string, params: unknown) {
+          if (!store.actions[name]) throw new Error(`Unknown action: ${name}`);
+          const newSeq = store.nextPeerSeq;
+          store.nextPeerSeq = newSeq + 1;
+          applyAction(rebasedDb, store.actions, name, params);
+          prepended.push({
+            kind: "action",
+            seq: newSeq,
+            name,
+            params,
+            baseMasterSeq: newMasterHead,
+          });
+        },
+      };
+
+      const resolution = await resolver(ctx);
+
+      for (const p of prepended) {
+        kept.push(p);
+        report.applied++;
+      }
+
+      if (!baseIsRebased) baseDb.close();
 
       if (resolution === "drop") {
         report.dropped++;
-        continue;
+        break;
       }
       if (resolution === "force") {
         if (conflict.kind === "error") {
@@ -151,25 +195,26 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
           force: true,
         });
         report.forced++;
+        break;
+      }
+      if (resolution === "retry") {
+        if (prepended.length === 0) {
+          rebasedDb.close();
+          throw new Error(
+            `"retry" without any ctx.submit(...) calls would loop indefinitely (action seq=${action.seq}, ${action.name})`,
+          );
+        }
+        // Mark as forced with fresh base: the peer is asserting "this action
+        // applies on the current state plus my prepended actions". Master's
+        // relaxed force check allows the own-peer prepended actions between
+        // `baseMasterSeq` and master head without flagging them as
+        // interleavings.
+        action = { ...action, baseMasterSeq: newMasterHead, force: true };
         continue;
       }
-      if (baseDbForResolver && baseDbForResolver !== rebasedDb) baseDbForResolver.close();
       rebasedDb.close();
       throw new Error(`Invalid conflict resolution: ${String(resolution)}`);
     }
-
-    if (baseDbForResolver && baseDbForResolver !== rebasedDb) baseDbForResolver.close();
-
-    applyAction(rebasedDb, store.actions, action.name, action.params);
-    kept.push({
-      kind: "action",
-      seq: action.seq,
-      name: action.name,
-      params: action.params,
-      baseMasterSeq: newMasterHead,
-      ...(action.force ? { force: true } : {}),
-    });
-    report.applied++;
   }
 
   const newLog: PeerLogEntry[] = [...kept, { kind: "master_ack", masterSeq: newMasterHead }];
@@ -179,9 +224,6 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
   const old = store.db;
   store.db = rebasedDb;
   store.currentMasterSeq = newMasterHead;
-  // Old db is retained for a short window: closing it here would crash user code
-  // that cached `store.db` before sync(). Tests close via Store.close(); real users
-  // should re-read `store.db` after every sync.
   try {
     old.close();
   } catch {

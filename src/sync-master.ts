@@ -125,10 +125,17 @@ export function runMasterSync(store: Store): SyncReport {
 
       let conflict: ConflictResult;
       if (entry.force) {
-        conflict =
-          store.currentMasterSeq === entry.baseMasterSeq
-            ? { ok: true }
-            : { ok: false, kind: "non_commutative" };
+        // Relaxed force boundary: accept iff every master action written
+        // since `entry.baseMasterSeq` is authored by this same peer. Own
+        // actions (e.g., actions this peer prepended during a `retry`
+        // resolution) don't invalidate the force, but another peer's
+        // interleaved action does.
+        const interleavedFromOthers = store.masterLog.some(
+          (e) => e.kind === "action" && e.seq > entry.baseMasterSeq && e.source.peer !== peerId,
+        );
+        conflict = interleavedFromOthers
+          ? { ok: false, kind: "non_commutative" }
+          : { ok: true };
       } else {
         const suffix = masterSuffixAfter(store, entry.baseMasterSeq);
         const baseDb = suffix.length === 0 ? store.db : buildStateAt(store, entry.baseMasterSeq);
