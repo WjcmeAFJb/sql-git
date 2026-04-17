@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Box, Text, useApp, useInput, useStdout } from "ink";
+import { Box, Text, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { Alert, Badge, Spinner } from "@inkjs/ui";
 import chokidar from "chokidar";
@@ -16,27 +16,12 @@ type Props = {
   root: string;
   peerId: string;
   masterId: string;
-  seed?: boolean;
   watchDebounceMs?: number;
   noWatch?: boolean;
 };
 
 type Tab = "accounts" | "categories" | "transactions";
-type Mode =
-  | "idle"
-  | "syncing"
-  | "form"
-  | "sub_tx_new"
-  | "sub_tx_edit"
-  | "conflict"
-  | "retry";
-
-type FormSpec = {
-  id: string;
-  title: string;
-  hint: string;
-  onSubmit: (value: string) => string | null; // returns error message or null on success
-};
+type Mode = "idle" | "syncing" | "form" | "submenu" | "conflict" | "retry";
 
 type PendingConflict = {
   ctx: ConflictContext;
@@ -46,6 +31,41 @@ type PendingConflict = {
 function nowTs(): string {
   return new Date().toISOString();
 }
+function genId(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)
+    .toString(36)
+    .padStart(2, "0")}`;
+}
+
+// ─── form types ──────────────────────────────────────────────────────────────
+
+type FieldText = {
+  type: "text";
+  key: string;
+  label: string;
+  initial?: string;
+  optional?: boolean;
+};
+type FieldNumber = {
+  type: "number";
+  key: string;
+  label: string;
+  initial?: string;
+  min?: number;
+};
+type FieldSelect = {
+  type: "select";
+  key: string;
+  label: string;
+  options: Array<{ label: string; value: string }>;
+};
+type FormField = FieldText | FieldNumber | FieldSelect;
+
+type FormSpec = {
+  title: string;
+  fields: FormField[];
+  onSubmit: (values: Record<string, string>) => string | null;
+};
 
 // ─── sub-components ──────────────────────────────────────────────────────────
 
@@ -136,11 +156,17 @@ function Tabs({ active }: { active: Tab }) {
 
 function AccountsTab({ accounts }: { accounts: Account[] }) {
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} flexGrow={1}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor="cyan"
+      paddingX={1}
+      flexGrow={1}
+    >
       <Text bold>Accounts ({accounts.length})</Text>
       {accounts.length === 0 ? <Text dimColor>— none —</Text> : null}
       {accounts.map((a) => (
-        <Text key={a.id}>
+        <Text key={a.id} wrap="truncate-end">
           ACCT {a.id} <Text color="yellow">{a.name}</Text>{" "}
           <Text color={a.balance > 0 ? "green" : "gray"}>${a.balance}</Text>
         </Text>
@@ -156,11 +182,17 @@ function CategoriesTab({ categories }: { categories: Category[] }) {
   const color = (kind: Category["kind"]) =>
     kind === "income" ? "green" : kind === "expense" ? "red" : "yellow";
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} flexGrow={1}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor="cyan"
+      paddingX={1}
+      flexGrow={1}
+    >
       <Text bold>Categories ({categories.length})</Text>
       {categories.length === 0 ? <Text dimColor>— none —</Text> : null}
       {categories.map((c) => (
-        <Text key={c.id}>
+        <Text key={c.id} wrap="truncate-end">
           CAT {c.id} <Text color="yellow">{c.name}</Text>{" "}
           <Text color={color(c.kind)}>[{c.kind}]</Text>
         </Text>
@@ -188,7 +220,13 @@ function TransactionsTab({
   const kindColor = (k: Transaction["kind"]) =>
     k === "income" ? "green" : k === "expense" ? "red" : "cyan";
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} flexGrow={1}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor="cyan"
+      paddingX={1}
+      flexGrow={1}
+    >
       <Text bold>Transactions ({transactions.length})</Text>
       {transactions.length === 0 ? <Text dimColor>— none —</Text> : null}
       {transactions.slice(-12).map((t) => {
@@ -220,37 +258,6 @@ function TransactionsTab({
   );
 }
 
-function FormPanel({
-  title,
-  hint,
-  value,
-  onChange,
-  onSubmit,
-  onCancel: _onCancel,
-}: {
-  title: string;
-  hint: string;
-  value: string;
-  onChange: (v: string) => void;
-  onSubmit: (v: string) => void;
-  onCancel: () => void;
-}) {
-  return (
-    <Box flexDirection="column" borderStyle="single" borderColor="yellow" paddingX={1}>
-      <Box>
-        <Badge color="yellow">FORM</Badge>
-        <Text bold> {title}</Text>
-      </Box>
-      <Text dimColor>{hint}</Text>
-      <Box>
-        <Text color="yellow">› </Text>
-        <TextInput value={value} onChange={onChange} onSubmit={onSubmit} />
-      </Box>
-      <Text dimColor>Enter=submit  Esc=cancel</Text>
-    </Box>
-  );
-}
-
 function SubMenu({ title, options }: { title: string; options: Array<[string, string]> }) {
   return (
     <Box flexDirection="column" borderStyle="single" borderColor="magenta" paddingX={1}>
@@ -272,6 +279,145 @@ function SubMenu({ title, options }: { title: string; options: Array<[string, st
   );
 }
 
+/** Multi-step form. Each field is asked in turn; Enter advances, Esc cancels. */
+function Wizard({
+  form,
+  values,
+  setValues,
+  current,
+  setCurrent,
+  textValue,
+  setTextValue,
+  fieldError,
+  setFieldError,
+  onFinish,
+}: {
+  form: FormSpec;
+  values: Record<string, string>;
+  setValues: (v: Record<string, string>) => void;
+  current: number;
+  setCurrent: (n: number) => void;
+  textValue: string;
+  setTextValue: (v: string) => void;
+  fieldError: string | null;
+  setFieldError: (e: string | null) => void;
+  onFinish: (err: string | null) => void;
+}) {
+  const field = form.fields[current];
+
+  const commit = (rawValue: string) => {
+    let value = rawValue;
+    if (field.type === "number") {
+      const n = Number(value);
+      if (!Number.isFinite(n)) {
+        setFieldError("must be a number");
+        return;
+      }
+      if ("min" in field && field.min !== undefined && n < field.min) {
+        setFieldError(`must be ≥ ${field.min}`);
+        return;
+      }
+      value = String(n);
+    }
+    if (field.type === "text" && !("optional" in field && field.optional) && !value) {
+      setFieldError("required");
+      return;
+    }
+    const newValues = { ...values, [field.key]: value };
+    setValues(newValues);
+    setFieldError(null);
+    const next = current + 1;
+    if (next >= form.fields.length) {
+      // Submit.
+      const err = form.onSubmit(newValues);
+      onFinish(err);
+      return;
+    }
+    setCurrent(next);
+    const nextField = form.fields[next];
+    if (nextField.type === "text" || nextField.type === "number") {
+      setTextValue(nextField.initial ?? "");
+    }
+  };
+
+  useInput((input, key) => {
+    if (key.escape) {
+      onFinish("cancelled");
+      return;
+    }
+    if (field.type === "select") {
+      const digit = parseInt(input, 10);
+      if (!Number.isNaN(digit) && digit >= 1 && digit <= field.options.length) {
+        commit(field.options[digit - 1].value);
+      }
+    }
+  });
+
+  return (
+    <Box flexDirection="column" borderStyle="single" borderColor="yellow" paddingX={1}>
+      <Box>
+        <Badge color="yellow">FORM</Badge>
+        <Text bold> {form.title}</Text>
+      </Box>
+      {/* Completed fields */}
+      {form.fields.slice(0, current).map((f) => {
+        const v = values[f.key];
+        const display =
+          f.type === "select"
+            ? (f.options.find((o) => o.value === v)?.label ?? v ?? "(empty)")
+            : v || "(empty)";
+        return (
+          <Text key={f.key} dimColor>
+            ✓ {f.label}: <Text>{display}</Text>
+          </Text>
+        );
+      })}
+
+      {/* Current field */}
+      {field.type === "text" || field.type === "number" ? (
+        <Box>
+          <Text color="yellow">› {field.label}: </Text>
+          <TextInput
+            value={textValue}
+            onChange={setTextValue}
+            onSubmit={commit}
+          />
+        </Box>
+      ) : (
+        <Box flexDirection="column">
+          <Text color="yellow">› {field.label}:</Text>
+          {field.options.map((o, i) => (
+            <Text key={o.value}>
+              {" "}
+              <Text bold color="magenta">
+                [{i + 1}]
+              </Text>{" "}
+              {o.label}
+            </Text>
+          ))}
+        </Box>
+      )}
+
+      {fieldError ? (
+        <Text color="red">✘ {fieldError}</Text>
+      ) : null}
+
+      {/* Pending fields preview */}
+      {form.fields.slice(current + 1).map((f) => (
+        <Text key={f.key} dimColor>
+          · {f.label}
+        </Text>
+      ))}
+
+      <Text dimColor>
+        {field.type === "select"
+          ? "press [1]–[9] to pick  Esc=cancel"
+          : "Enter=next  Esc=cancel"}
+      </Text>
+    </Box>
+  );
+}
+
 function ConflictPanel({ conflict }: { conflict: PendingConflict }) {
   const c = conflict.ctx;
   return (
@@ -287,8 +433,8 @@ function ConflictPanel({ conflict }: { conflict: PendingConflict }) {
       {c.error ? <Text color="red">error: {c.error.message}</Text> : null}
       <Box marginTop={1}>
         <Text>
-          <Text bold>[d]</Text>rop the action · <Text bold>[f]</Text>orce (override commute check) ·{" "}
-          <Text bold>[r]</Text>etry (submit fixing actions first)
+          <Text bold>[d]</Text>rop · <Text bold>[f]</Text>orce ·{" "}
+          <Text bold>[r]</Text>etry (prepend a fixing transfer)
         </Text>
       </Box>
     </Box>
@@ -301,7 +447,6 @@ export function App({
   root,
   peerId,
   masterId,
-  seed = false,
   watchDebounceMs = 300,
   noWatch = false,
 }: Props) {
@@ -311,11 +456,18 @@ export function App({
 
   const [tab, setTab] = useState<Tab>("transactions");
   const [mode, setMode] = useState<Mode>("idle");
+
   const [form, setForm] = useState<FormSpec | null>(null);
-  const [subMenuOptions, setSubMenuOptions] = useState<Array<[string, string]>>([]);
-  const [subMenuHandlers, setSubMenuHandlers] = useState<Record<string, () => void>>({});
-  const [subMenuTitle, setSubMenuTitle] = useState("");
-  const [inputValue, setInputValue] = useState("");
+  const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const [formCurrent, setFormCurrent] = useState(0);
+  const [formTextValue, setFormTextValue] = useState("");
+  const [formFieldError, setFormFieldError] = useState<string | null>(null);
+
+  const [submenu, setSubmenu] = useState<{
+    title: string;
+    options: Array<[string, string]>;
+    handlers: Record<string, () => void>;
+  } | null>(null);
 
   const [status, setStatus] = useState("starting");
   const [statusKind, setStatusKind] = useState<"info" | "success" | "error" | "warning">(
@@ -323,6 +475,7 @@ export function App({
   );
   const [head, setHead] = useState(0);
   const [conflict, setConflict] = useState<PendingConflict | null>(null);
+  const [retryInput, setRetryInput] = useState("");
   const [, tick] = useState(0);
   const bump = useCallback(() => tick((x) => x + 1), []);
 
@@ -384,24 +537,21 @@ export function App({
     }
   }, [bump, setErr, setInfo, setOk]);
 
-  // open store
+  // open store + auto-init master schema
   useEffect(() => {
     try {
       const s = Store.open({ root, peerId, masterId, actions: bankActions });
       storeRef.current = s;
       setStore(s);
       setHead(s.currentMasterSeq);
-      if (seed && s.isMaster) {
-        const hasTables = s.db
+      if (s.isMaster) {
+        const hasAccountsTable = s.db
           .prepare(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'",
           )
           .get();
-        if (!hasTables) {
+        if (!hasAccountsTable) {
           s.submit("init_bank", {});
-          s.submit("create_account", { id: "checking", name: "Checking", ts: nowTs() });
-          s.submit("create_account", { id: "savings", name: "Savings", ts: nowTs() });
-          s.submit("create_account", { id: "external", name: "External", ts: nowTs() });
           setHead(s.currentMasterSeq);
         }
       }
@@ -413,7 +563,7 @@ export function App({
       storeRef.current?.close();
       storeRef.current = null;
     };
-  }, [root, peerId, masterId, seed, setInfo]);
+  }, [root, peerId, masterId, setInfo]);
 
   // initial sync
   useEffect(() => {
@@ -442,416 +592,7 @@ export function App({
     };
   }, [store, root, doSync, watchDebounceMs, noWatch]);
 
-  // ─── form-spec builders ────────────────────────────────────────────────
-  const openForm = useCallback(
-    (spec: FormSpec) => {
-      setForm(spec);
-      setInputValue("");
-      setMode("form");
-    },
-    [],
-  );
-  const closeForm = useCallback(() => {
-    setForm(null);
-    setInputValue("");
-    setMode("idle");
-  }, []);
-
-  const accountNewForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "account_new",
-      title: "New account",
-      hint: "id name",
-      onSubmit: (v) => {
-        const parts = v.trim().split(/\s+/);
-        if (parts.length !== 2) return `expected "id name"`;
-        try {
-          s.submit("create_account", { id: parts[0], name: parts[1], ts: nowTs() });
-          setOk(`created account ${parts[0]}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-  const accountRenameForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "account_rename",
-      title: "Rename account",
-      hint: "id new-name",
-      onSubmit: (v) => {
-        const parts = v.trim().split(/\s+/);
-        if (parts.length !== 2) return `expected "id new-name"`;
-        try {
-          s.submit("rename_account", { id: parts[0], name: parts[1] });
-          setOk(`renamed ${parts[0]}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-  const accountDeleteForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "account_delete",
-      title: "Delete account",
-      hint: "id",
-      onSubmit: (v) => {
-        const id = v.trim();
-        if (!id) return "empty id";
-        try {
-          s.submit("delete_account", { id });
-          setOk(`deleted account ${id}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-
-  const categoryNewForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "category_new",
-      title: "New category",
-      hint: "id name kind   (kind: income | expense | both)",
-      onSubmit: (v) => {
-        const parts = v.trim().split(/\s+/);
-        if (parts.length !== 3) return `expected "id name kind"`;
-        const [id, name, kind] = parts;
-        if (kind !== "income" && kind !== "expense" && kind !== "both") {
-          return `kind must be income|expense|both`;
-        }
-        try {
-          s.submit("create_category", { id, name, kind, ts: nowTs() });
-          setOk(`created category ${id}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-  const categoryRenameForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "category_rename",
-      title: "Rename category",
-      hint: "id new-name",
-      onSubmit: (v) => {
-        const parts = v.trim().split(/\s+/);
-        if (parts.length !== 2) return `expected "id new-name"`;
-        try {
-          s.submit("rename_category", { id: parts[0], name: parts[1] });
-          setOk(`renamed ${parts[0]}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-  const categoryDeleteForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "category_delete",
-      title: "Delete category",
-      hint: "id",
-      onSubmit: (v) => {
-        const id = v.trim();
-        if (!id) return "empty id";
-        try {
-          s.submit("delete_category", { id });
-          setOk(`deleted category ${id}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-
-  const txIncomeForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "tx_income",
-      title: "New income",
-      hint: "id acc_to amount [category_id|- [memo…]]",
-      onSubmit: (v) => {
-        const parts = v.trim().split(/\s+/);
-        if (parts.length < 3) return `expected "id acc_to amount [cat [memo…]]"`;
-        const [id, acc_to, amountStr, cat = "-", ...rest] = parts;
-        try {
-          s.submit("create_income", {
-            id,
-            acc_to,
-            amount: Number(amountStr),
-            category_id: cat === "-" ? null : cat,
-            memo: rest.join(" "),
-            ts: nowTs(),
-          });
-          setOk(`income ${id}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-  const txExpenseForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "tx_expense",
-      title: "New expense",
-      hint: "id acc_from amount [category_id|- [memo…]]",
-      onSubmit: (v) => {
-        const parts = v.trim().split(/\s+/);
-        if (parts.length < 3) return `expected "id acc_from amount [cat [memo…]]"`;
-        const [id, acc_from, amountStr, cat = "-", ...rest] = parts;
-        try {
-          s.submit("create_expense", {
-            id,
-            acc_from,
-            amount: Number(amountStr),
-            category_id: cat === "-" ? null : cat,
-            memo: rest.join(" "),
-            ts: nowTs(),
-          });
-          setOk(`expense ${id}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-  const txTransferForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "tx_transfer",
-      title: "New transfer (between accounts)",
-      hint: "id acc_from acc_to amount [memo…]",
-      onSubmit: (v) => {
-        const parts = v.trim().split(/\s+/);
-        if (parts.length < 4) return `expected "id acc_from acc_to amount [memo…]"`;
-        const [id, acc_from, acc_to, amountStr, ...rest] = parts;
-        try {
-          s.submit("create_transfer", {
-            id,
-            acc_from,
-            acc_to,
-            amount: Number(amountStr),
-            memo: rest.join(" "),
-            ts: nowTs(),
-          });
-          setOk(`transfer ${id}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-  const txEditAmountForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "tx_edit_amount",
-      title: "Edit transaction amount",
-      hint: "id amount",
-      onSubmit: (v) => {
-        const parts = v.trim().split(/\s+/);
-        if (parts.length !== 2) return `expected "id amount"`;
-        try {
-          s.submit("edit_tx_amount", { id: parts[0], amount: Number(parts[1]) });
-          setOk(`amount updated for ${parts[0]}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-  const txEditMemoForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "tx_edit_memo",
-      title: "Edit transaction memo",
-      hint: "id memo…",
-      onSubmit: (v) => {
-        const idx = v.indexOf(" ");
-        if (idx < 0) return `expected "id memo…"`;
-        const id = v.slice(0, idx).trim();
-        const memo = v.slice(idx + 1);
-        try {
-          s.submit("edit_tx_memo", { id, memo });
-          setOk(`memo updated for ${id}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-  const txEditCategoryForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "tx_edit_category",
-      title: "Edit transaction category",
-      hint: "id category_id|-",
-      onSubmit: (v) => {
-        const parts = v.trim().split(/\s+/);
-        if (parts.length !== 2) return `expected "id category_id|-"`;
-        try {
-          s.submit("edit_tx_category", {
-            id: parts[0],
-            category_id: parts[1] === "-" ? null : parts[1],
-          });
-          setOk(`category updated for ${parts[0]}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-  const txDeleteForm = useCallback((): FormSpec => {
-    const s = storeRef.current!;
-    return {
-      id: "tx_delete",
-      title: "Delete transaction",
-      hint: "id",
-      onSubmit: (v) => {
-        const id = v.trim();
-        if (!id) return "empty id";
-        try {
-          s.submit("delete_transaction", { id });
-          setOk(`deleted tx ${id}`);
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-        return null;
-      },
-    };
-  }, [setOk]);
-
-  // ─── keyboard ─────────────────────────────────────────────────────────
-  useInput((raw, key) => {
-    if (openError) {
-      if (raw === "q") exit();
-      return;
-    }
-    if (!store) return;
-
-    if (mode === "form" && form) {
-      if (key.escape) closeForm();
-      return;
-    }
-    if (mode === "sub_tx_new" || mode === "sub_tx_edit") {
-      if (key.escape) {
-        setMode("idle");
-        return;
-      }
-      const h = subMenuHandlers[raw];
-      if (h) {
-        h();
-      }
-      return;
-    }
-    if (mode === "retry") {
-      if (key.escape) {
-        setInputValue("");
-        setMode("conflict");
-      }
-      return;
-    }
-    if (mode === "conflict" && conflict) {
-      if (raw === "d") {
-        conflict.resolve("drop");
-        setConflict(null);
-        setMode("syncing");
-      } else if (raw === "f") {
-        conflict.resolve("force");
-        setConflict(null);
-        setMode("syncing");
-      } else if (raw === "r") {
-        setInputValue("");
-        setMode("retry");
-      }
-      return;
-    }
-
-    // idle
-    if (raw === "q") {
-      exit();
-      return;
-    }
-    if (raw === "s") {
-      void doSync();
-      return;
-    }
-    // tab switching
-    if (raw === "a" || raw === "1") {
-      setTab("accounts");
-      return;
-    }
-    if (raw === "c" || raw === "2") {
-      setTab("categories");
-      return;
-    }
-    if (raw === "t" || raw === "3") {
-      setTab("transactions");
-      return;
-    }
-
-    // per-tab commands
-    if (tab === "accounts") {
-      if (raw === "n") openForm(accountNewForm());
-      else if (raw === "r") openForm(accountRenameForm());
-      else if (raw === "d") openForm(accountDeleteForm());
-    } else if (tab === "categories") {
-      if (raw === "n") openForm(categoryNewForm());
-      else if (raw === "r") openForm(categoryRenameForm());
-      else if (raw === "d") openForm(categoryDeleteForm());
-    } else if (tab === "transactions") {
-      if (raw === "n") {
-        setSubMenuTitle("New transaction — pick kind");
-        setSubMenuOptions([
-          ["i", "income"],
-          ["e", "expense"],
-          ["x", "transfer (between accounts)"],
-        ]);
-        setSubMenuHandlers({
-          i: () => openForm(txIncomeForm()),
-          e: () => openForm(txExpenseForm()),
-          x: () => openForm(txTransferForm()),
-        });
-        setMode("sub_tx_new");
-      } else if (raw === "e") {
-        setSubMenuTitle("Edit transaction — pick field");
-        setSubMenuOptions([
-          ["p", "amount (price)"],
-          ["m", "memo"],
-          ["c", "category"],
-        ]);
-        setSubMenuHandlers({
-          p: () => openForm(txEditAmountForm()),
-          m: () => openForm(txEditMemoForm()),
-          c: () => openForm(txEditCategoryForm()),
-        });
-        setMode("sub_tx_edit");
-      } else if (raw === "d") {
-        openForm(txDeleteForm());
-      }
-    }
-  });
-
-  // ─── data queries ─────────────────────────────────────────────────────
+  // ─── data queries (computed each render) ──────────────────────────────
   const tablesExist = store
     ? store.db
         .prepare(
@@ -875,10 +616,540 @@ export function App({
           .prepare("SELECT * FROM transactions ORDER BY ts")
           .all() as Transaction[])
       : [];
-  const pendingCount = store && !store.isMaster
-    ? store.peerLog.filter((e) => e.kind === "action").length
-    : 0;
+  const pendingActions = store && !store.isMaster
+    ? store.peerLog.filter((e) => e.kind === "action")
+    : [];
 
+  // ─── form builders ────────────────────────────────────────────────────
+  const openForm = (spec: FormSpec) => {
+    setForm(spec);
+    setFormValues({});
+    setFormCurrent(0);
+    const first = spec.fields[0];
+    setFormTextValue(
+      first && (first.type === "text" || first.type === "number") ? (first.initial ?? "") : "",
+    );
+    setFormFieldError(null);
+    setMode("form");
+  };
+  const closeForm = () => {
+    setForm(null);
+    setFormValues({});
+    setFormCurrent(0);
+    setFormTextValue("");
+    setFormFieldError(null);
+    setMode("idle");
+  };
+
+  const accountOptions = () =>
+    accounts.map((a) => ({ label: `${a.name} (${a.id}) · $${a.balance}`, value: a.id }));
+  const categoryOptions = (includeNone = true) => {
+    const opts = categories.map((c) => ({
+      label: `${c.name} [${c.kind}]`,
+      value: c.id,
+    }));
+    return includeNone ? [{ label: "— none —", value: "" }, ...opts] : opts;
+  };
+  const txOptions = () =>
+    transactions
+      .slice(-20)
+      .map((t) => ({
+        label: `${t.id} · ${t.kind} · $${t.amount}${t.memo ? " · " + t.memo.slice(0, 20) : ""}`,
+        value: t.id,
+      }));
+
+  // ACCOUNTS
+  const newAccountForm = (): FormSpec => ({
+    title: "New account",
+    fields: [
+      { type: "text", key: "name", label: "Display name" },
+      { type: "text", key: "id", label: "Short id (blank = auto)", optional: true },
+    ],
+    onSubmit: (v) => {
+      const id = v.id || genId("acc");
+      try {
+        storeRef.current!.submit("create_account", { id, name: v.name, ts: nowTs() });
+        setOk(`created account ${id}`);
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+    },
+  });
+  const renameAccountForm = (): FormSpec | null => {
+    if (accounts.length === 0) {
+      setErr("no accounts to rename");
+      return null;
+    }
+    return {
+      title: "Rename account",
+      fields: [
+        { type: "select", key: "id", label: "Account", options: accountOptions() },
+        { type: "text", key: "name", label: "New name" },
+      ],
+      onSubmit: (v) => {
+        try {
+          storeRef.current!.submit("rename_account", { id: v.id, name: v.name });
+          setOk(`renamed ${v.id}`);
+          return null;
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      },
+    };
+  };
+  const deleteAccountForm = (): FormSpec | null => {
+    if (accounts.length === 0) {
+      setErr("no accounts to delete");
+      return null;
+    }
+    return {
+      title: "Delete account",
+      fields: [{ type: "select", key: "id", label: "Account", options: accountOptions() }],
+      onSubmit: (v) => {
+        try {
+          storeRef.current!.submit("delete_account", { id: v.id });
+          setOk(`deleted account ${v.id}`);
+          return null;
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      },
+    };
+  };
+
+  // CATEGORIES
+  const newCategoryForm = (): FormSpec => ({
+    title: "New category",
+    fields: [
+      { type: "text", key: "name", label: "Name" },
+      {
+        type: "select",
+        key: "kind",
+        label: "Kind",
+        options: [
+          { label: "income", value: "income" },
+          { label: "expense", value: "expense" },
+          { label: "both", value: "both" },
+        ],
+      },
+      { type: "text", key: "id", label: "Short id (blank = auto)", optional: true },
+    ],
+    onSubmit: (v) => {
+      const id = v.id || genId("cat");
+      try {
+        storeRef.current!.submit("create_category", {
+          id,
+          name: v.name,
+          kind: v.kind as "income" | "expense" | "both",
+          ts: nowTs(),
+        });
+        setOk(`created category ${id}`);
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+    },
+  });
+  const renameCategoryForm = (): FormSpec | null => {
+    if (categories.length === 0) {
+      setErr("no categories to rename");
+      return null;
+    }
+    return {
+      title: "Rename category",
+      fields: [
+        {
+          type: "select",
+          key: "id",
+          label: "Category",
+          options: categoryOptions(false),
+        },
+        { type: "text", key: "name", label: "New name" },
+      ],
+      onSubmit: (v) => {
+        try {
+          storeRef.current!.submit("rename_category", { id: v.id, name: v.name });
+          setOk(`renamed category ${v.id}`);
+          return null;
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      },
+    };
+  };
+  const deleteCategoryForm = (): FormSpec | null => {
+    if (categories.length === 0) {
+      setErr("no categories to delete");
+      return null;
+    }
+    return {
+      title: "Delete category",
+      fields: [
+        { type: "select", key: "id", label: "Category", options: categoryOptions(false) },
+      ],
+      onSubmit: (v) => {
+        try {
+          storeRef.current!.submit("delete_category", { id: v.id });
+          setOk(`deleted category ${v.id}`);
+          return null;
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      },
+    };
+  };
+
+  // TRANSACTIONS
+  const incomeForm = (): FormSpec | null => {
+    if (accounts.length === 0) {
+      setErr("create an account first");
+      return null;
+    }
+    return {
+      title: "New income (cash in)",
+      fields: [
+        { type: "number", key: "amount", label: "Amount", min: 1 },
+        { type: "select", key: "acc_to", label: "Into account", options: accountOptions() },
+        {
+          type: "select",
+          key: "category_id",
+          label: "Category",
+          options: categoryOptions(true),
+        },
+        { type: "text", key: "memo", label: "Memo (optional)", optional: true },
+        { type: "text", key: "id", label: "Tx id (blank = auto)", optional: true },
+      ],
+      onSubmit: (v) => {
+        const id = v.id || genId("inc");
+        try {
+          storeRef.current!.submit("create_income", {
+            id,
+            acc_to: v.acc_to,
+            amount: Number(v.amount),
+            category_id: v.category_id || null,
+            memo: v.memo,
+            ts: nowTs(),
+          });
+          setOk(`income ${id}`);
+          return null;
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      },
+    };
+  };
+  const expenseForm = (): FormSpec | null => {
+    if (accounts.length === 0) {
+      setErr("create an account first");
+      return null;
+    }
+    return {
+      title: "New expense (cash out)",
+      fields: [
+        { type: "number", key: "amount", label: "Amount", min: 1 },
+        { type: "select", key: "acc_from", label: "From account", options: accountOptions() },
+        {
+          type: "select",
+          key: "category_id",
+          label: "Category",
+          options: categoryOptions(true),
+        },
+        { type: "text", key: "memo", label: "Memo (optional)", optional: true },
+        { type: "text", key: "id", label: "Tx id (blank = auto)", optional: true },
+      ],
+      onSubmit: (v) => {
+        const id = v.id || genId("exp");
+        try {
+          storeRef.current!.submit("create_expense", {
+            id,
+            acc_from: v.acc_from,
+            amount: Number(v.amount),
+            category_id: v.category_id || null,
+            memo: v.memo,
+            ts: nowTs(),
+          });
+          setOk(`expense ${id}`);
+          return null;
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      },
+    };
+  };
+  const transferForm = (): FormSpec | null => {
+    if (accounts.length < 2) {
+      setErr("need at least two accounts for a transfer");
+      return null;
+    }
+    return {
+      title: "New transfer (between accounts)",
+      fields: [
+        { type: "number", key: "amount", label: "Amount", min: 1 },
+        { type: "select", key: "acc_from", label: "From", options: accountOptions() },
+        { type: "select", key: "acc_to", label: "To", options: accountOptions() },
+        { type: "text", key: "memo", label: "Memo (optional)", optional: true },
+        { type: "text", key: "id", label: "Tx id (blank = auto)", optional: true },
+      ],
+      onSubmit: (v) => {
+        if (v.acc_from === v.acc_to) return "from and to must differ";
+        const id = v.id || genId("tr");
+        try {
+          storeRef.current!.submit("create_transfer", {
+            id,
+            acc_from: v.acc_from,
+            acc_to: v.acc_to,
+            amount: Number(v.amount),
+            memo: v.memo,
+            ts: nowTs(),
+          });
+          setOk(`transfer ${id}`);
+          return null;
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      },
+    };
+  };
+  const editAmountForm = (): FormSpec | null => {
+    if (transactions.length === 0) {
+      setErr("no transactions");
+      return null;
+    }
+    return {
+      title: "Edit transaction amount",
+      fields: [
+        { type: "select", key: "id", label: "Transaction", options: txOptions() },
+        { type: "number", key: "amount", label: "New amount", min: 1 },
+      ],
+      onSubmit: (v) => {
+        try {
+          storeRef.current!.submit("edit_tx_amount", {
+            id: v.id,
+            amount: Number(v.amount),
+          });
+          setOk(`amount updated for ${v.id}`);
+          return null;
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      },
+    };
+  };
+  const editMemoForm = (): FormSpec | null => {
+    if (transactions.length === 0) {
+      setErr("no transactions");
+      return null;
+    }
+    return {
+      title: "Edit transaction memo",
+      fields: [
+        { type: "select", key: "id", label: "Transaction", options: txOptions() },
+        { type: "text", key: "memo", label: "New memo", optional: true },
+      ],
+      onSubmit: (v) => {
+        try {
+          storeRef.current!.submit("edit_tx_memo", { id: v.id, memo: v.memo });
+          setOk(`memo updated for ${v.id}`);
+          return null;
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      },
+    };
+  };
+  const editCategoryForm = (): FormSpec | null => {
+    if (transactions.length === 0) {
+      setErr("no transactions");
+      return null;
+    }
+    return {
+      title: "Edit transaction category",
+      fields: [
+        { type: "select", key: "id", label: "Transaction", options: txOptions() },
+        {
+          type: "select",
+          key: "category_id",
+          label: "Category",
+          options: categoryOptions(true),
+        },
+      ],
+      onSubmit: (v) => {
+        try {
+          storeRef.current!.submit("edit_tx_category", {
+            id: v.id,
+            category_id: v.category_id || null,
+          });
+          setOk(`category updated for ${v.id}`);
+          return null;
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      },
+    };
+  };
+  const deleteTxForm = (): FormSpec | null => {
+    if (transactions.length === 0) {
+      setErr("no transactions");
+      return null;
+    }
+    return {
+      title: "Delete transaction",
+      fields: [{ type: "select", key: "id", label: "Transaction", options: txOptions() }],
+      onSubmit: (v) => {
+        try {
+          storeRef.current!.submit("delete_transaction", { id: v.id });
+          setOk(`deleted tx ${v.id}`);
+          return null;
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      },
+    };
+  };
+
+  // ─── keyboard ─────────────────────────────────────────────────────────
+  useInput((raw, key) => {
+    if (openError) {
+      if (raw === "q") exit();
+      return;
+    }
+    if (!store) return;
+
+    if (mode === "form") {
+      // handled by Wizard
+      return;
+    }
+    if (mode === "submenu" && submenu) {
+      if (key.escape) {
+        setSubmenu(null);
+        setMode("idle");
+        return;
+      }
+      const h = submenu.handlers[raw];
+      if (h) h();
+      return;
+    }
+    if (mode === "retry") {
+      if (key.escape) {
+        setRetryInput("");
+        setMode("conflict");
+      }
+      return;
+    }
+    if (mode === "conflict" && conflict) {
+      if (raw === "d") {
+        conflict.resolve("drop");
+        setConflict(null);
+        setMode("syncing");
+      } else if (raw === "f") {
+        conflict.resolve("force");
+        setConflict(null);
+        setMode("syncing");
+      } else if (raw === "r") {
+        setRetryInput("");
+        setMode("retry");
+      }
+      return;
+    }
+
+    // Ignore inputs while syncing (except 'q'); a state-changing press during
+    // an in-flight sync races with doSync's final setMode("idle").
+    if (mode === "syncing") {
+      if (raw === "q") exit();
+      return;
+    }
+
+    // idle
+    if (raw === "q") {
+      exit();
+      return;
+    }
+    if (raw === "s") {
+      void doSync();
+      return;
+    }
+    if (raw === "a" || raw === "1") {
+      setTab("accounts");
+      return;
+    }
+    if (raw === "c" || raw === "2") {
+      setTab("categories");
+      return;
+    }
+    if (raw === "t" || raw === "3") {
+      setTab("transactions");
+      return;
+    }
+
+    // Per-tab actions.
+    const maybeOpen = (spec: FormSpec | null | undefined) => {
+      if (spec) openForm(spec);
+    };
+    if (tab === "accounts") {
+      if (raw === "n") maybeOpen(newAccountForm());
+      else if (raw === "r") maybeOpen(renameAccountForm());
+      else if (raw === "d") maybeOpen(deleteAccountForm());
+    } else if (tab === "categories") {
+      if (raw === "n") maybeOpen(newCategoryForm());
+      else if (raw === "r") maybeOpen(renameCategoryForm());
+      else if (raw === "d") maybeOpen(deleteCategoryForm());
+    } else if (tab === "transactions") {
+      if (raw === "n") {
+        setSubmenu({
+          title: "New transaction — pick kind",
+          options: [
+            ["i", "income (cash in)"],
+            ["e", "expense (cash out)"],
+            ["x", "transfer (between accounts)"],
+          ],
+          handlers: {
+            i: () => {
+              setSubmenu(null);
+              maybeOpen(incomeForm());
+            },
+            e: () => {
+              setSubmenu(null);
+              maybeOpen(expenseForm());
+            },
+            x: () => {
+              setSubmenu(null);
+              maybeOpen(transferForm());
+            },
+          },
+        });
+        setMode("submenu");
+      } else if (raw === "e") {
+        setSubmenu({
+          title: "Edit transaction — pick field",
+          options: [
+            ["p", "amount (price)"],
+            ["m", "memo"],
+            ["c", "category"],
+          ],
+          handlers: {
+            p: () => {
+              setSubmenu(null);
+              maybeOpen(editAmountForm());
+            },
+            m: () => {
+              setSubmenu(null);
+              maybeOpen(editMemoForm());
+            },
+            c: () => {
+              setSubmenu(null);
+              maybeOpen(editCategoryForm());
+            },
+          },
+        });
+        setMode("submenu");
+      } else if (raw === "d") {
+        maybeOpen(deleteTxForm());
+      }
+    }
+  });
+
+  // ─── render ───────────────────────────────────────────────────────────
   if (openError) {
     return (
       <Box flexDirection="column">
@@ -895,6 +1166,8 @@ export function App({
   if (!store) return <Text>opening…</Text>;
 
   const termWidth = Math.max(process.stdout.columns || 120, 80);
+  const showWaiting = !tablesExist && !store.isMaster;
+
   return (
     <Box flexDirection="column" width={termWidth}>
       <TopBar
@@ -907,57 +1180,82 @@ export function App({
       />
       <BalanceStrip accounts={accounts} />
       <Tabs active={tab} />
-      <Box marginTop={1}>
-        {tab === "accounts" ? <AccountsTab accounts={accounts} /> : null}
-        {tab === "categories" ? <CategoriesTab categories={categories} /> : null}
-        {tab === "transactions" ? (
-          <TransactionsTab
-            transactions={transactions}
-            accounts={accounts}
-            categories={categories}
-          />
-        ) : null}
-      </Box>
-      {!store.isMaster ? (
+
+      {showWaiting ? (
+        <Box marginTop={1}>
+          <Alert variant="info">
+            <Text>
+              no schema yet — waiting for master&apos;s initial sync. Run{" "}
+              <Text bold>syncer sync</Text> between this host and master, then press{" "}
+              <Text bold>[s]</Text> to re-sync.
+            </Text>
+          </Alert>
+        </Box>
+      ) : (
+        <Box marginTop={1}>
+          {tab === "accounts" ? <AccountsTab accounts={accounts} /> : null}
+          {tab === "categories" ? <CategoriesTab categories={categories} /> : null}
+          {tab === "transactions" ? (
+            <TransactionsTab
+              transactions={transactions}
+              accounts={accounts}
+              categories={categories}
+            />
+          ) : null}
+        </Box>
+      )}
+
+      {!store.isMaster && pendingActions.length > 0 ? (
         <Box marginTop={1}>
           <Text dimColor>
-            pending ({pendingCount})
-            {pendingCount > 0
-              ? ": " +
-                store.peerLog
-                  .filter((e) => e.kind === "action")
-                  .map((e) =>
-                    e.kind === "action"
-                      ? `seq=${e.seq}:${e.name}${e.force ? "(force)" : ""}`
-                      : "",
-                  )
-                  .join(", ")
-              : ""}
+            pending ({pendingActions.length}):{" "}
+            {pendingActions
+              .map((e) =>
+                e.kind === "action"
+                  ? `seq=${e.seq}:${e.name}${e.force ? "(force)" : ""}`
+                  : "",
+              )
+              .join(", ")}
           </Text>
         </Box>
-      ) : null}
+      ) : (
+        <Box marginTop={1}>
+          <Text dimColor>pending (0)</Text>
+        </Box>
+      )}
 
       {mode === "form" && form ? (
         <Box marginTop={1}>
-          <FormPanel
-            title={form.title}
-            hint={form.hint}
-            value={inputValue}
-            onChange={setInputValue}
-            onSubmit={(v) => {
-              const err = form.onSubmit(v);
-              if (err) setErr(err);
+          <Wizard
+            form={form}
+            values={formValues}
+            setValues={setFormValues}
+            current={formCurrent}
+            setCurrent={setFormCurrent}
+            textValue={formTextValue}
+            setTextValue={setFormTextValue}
+            fieldError={formFieldError}
+            setFieldError={setFormFieldError}
+            onFinish={(err) => {
+              if (err === "cancelled") {
+                closeForm();
+                return;
+              }
+              if (err) {
+                // stay on the last field with error
+                setFormFieldError(err);
+                return;
+              }
               closeForm();
               bump();
             }}
-            onCancel={closeForm}
           />
         </Box>
       ) : null}
 
-      {(mode === "sub_tx_new" || mode === "sub_tx_edit") ? (
+      {mode === "submenu" && submenu ? (
         <Box marginTop={1}>
-          <SubMenu title={subMenuTitle} options={subMenuOptions} />
+          <SubMenu title={submenu.title} options={submenu.options} />
         </Box>
       ) : null}
 
@@ -969,54 +1267,54 @@ export function App({
 
       {mode === "retry" && conflict ? (
         <Box marginTop={1}>
-          <Box flexDirection="column" borderStyle="single" borderColor="yellow" paddingX={1}>
+          <Box
+            flexDirection="column"
+            borderStyle="single"
+            borderColor="yellow"
+            paddingX={1}
+          >
             <Box>
               <Badge color="yellow">RETRY</Badge>
-              <Text bold> submit a prepended action, then retry</Text>
+              <Text bold> prepend a transfer (topup), then retry</Text>
             </Box>
-            <Text dimColor>syntax: same as the TX form you're retrying</Text>
-            <Text dimColor>
-              e.g. transfer: "txId acc_from acc_to amount [memo]"
-            </Text>
+            <Text dimColor>syntax: "amount from-acc-id to-acc-id [memo]"</Text>
             <Box>
               <Text color="yellow">› </Text>
               <TextInput
-                value={inputValue}
-                onChange={setInputValue}
+                value={retryInput}
+                onChange={setRetryInput}
                 onSubmit={(val) => {
-                  // Always parse as a transfer — the canonical "topup" retry.
                   const parts = val.trim().split(/\s+/);
-                  if (parts.length < 4) {
-                    setErr(`retry expected "id acc_from acc_to amount [memo]"`);
-                    setInputValue("");
+                  if (parts.length < 3) {
+                    setErr(`retry expected "amount from-acc to-acc [memo]"`);
                     return;
                   }
-                  const [id, acc_from, acc_to, amountStr, ...rest] = parts;
-                  const amount = Number(amountStr);
+                  const amount = Number(parts[0]);
                   if (!Number.isFinite(amount) || amount <= 0) {
-                    setErr(`retry: amount must be a positive number, got "${amountStr}"`);
-                    setInputValue("");
+                    setErr("amount must be a positive number");
                     return;
                   }
+                  const [, acc_from, acc_to, ...memoParts] = parts;
+                  const id = genId("topup");
                   try {
                     conflict.ctx.submit("create_transfer", {
                       id,
                       acc_from,
                       acc_to,
                       amount,
-                      memo: rest.join(" "),
+                      memo: memoParts.join(" "),
                       ts: nowTs(),
                     });
                     setOk(`prepended transfer ${id} — retrying`);
                     conflict.resolve("retry");
                     setConflict(null);
                     setMode("syncing");
-                    setInputValue("");
+                    setRetryInput("");
                   } catch (err) {
                     setErr(
                       `retry prepend failed: ${err instanceof Error ? err.message : String(err)}`,
                     );
-                    setInputValue("");
+                    setRetryInput("");
                   }
                 }}
               />

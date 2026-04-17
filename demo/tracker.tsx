@@ -9,7 +9,6 @@ type Args = {
   path?: string;
   peerId?: string;
   masterId?: string;
-  seed?: boolean;
   watchDebounce?: number;
   noWatch?: boolean;
 };
@@ -21,7 +20,6 @@ function parseArgs(argv: string[]): Args {
     const next = () => argv[++i];
     if (a === "--peer-id" || a === "--peer") out.peerId = next();
     else if (a === "--master-id" || a === "--master") out.masterId = next();
-    else if (a === "--seed") out.seed = true;
     else if (a === "--watch-debounce") out.watchDebounce = Number(next());
     else if (a === "--no-watch") out.noWatch = true;
     else if (a === "--help" || a === "-h") {
@@ -29,10 +27,11 @@ function parseArgs(argv: string[]): Args {
         `tracker — ink TUI money tracker backed by sql-git
 
 USAGE
-  tracker PATH --peer-id ID [--master ID] [--seed] [--watch-debounce ms] [--no-watch]
+  tracker PATH --peer-id ID [--master ID] [--watch-debounce ms] [--no-watch]
 
 PATH is a host directory created with 'syncer create-host PATH'. The master id
-is read from PATH/host.json unless overridden with --master.`,
+is read from PATH/host.json unless overridden with --master. Master peers
+auto-initialize the schema on first open.`,
       );
       process.exit(0);
     } else if (a.startsWith("-")) {
@@ -80,7 +79,6 @@ render(
     root={args.path}
     peerId={args.peerId}
     masterId={masterId}
-    seed={args.seed ?? false}
     watchDebounceMs={args.watchDebounce ?? 300}
     noWatch={args.noWatch ?? false}
   />,
