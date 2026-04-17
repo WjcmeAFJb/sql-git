@@ -4,6 +4,9 @@
 #   syncer create-host PATH [--master ID]
 #   syncer sync A B [...]
 #   tracker PATH --peer-id ID
+#
+# IDs in the TUI are auto-generated — the walkthrough uses memos to identify
+# specific transactions in assertions and picks them by position in selects.
 set -euo pipefail
 
 ROOT=${ROOT:-/tmp/sqlgit-walk}
@@ -18,20 +21,19 @@ TRACKER=(./node_modules/.bin/tsx ./demo/tracker.tsx)
 "${SYNCER[@]}" create-host "$ROOT/phone"   --master desktop
 
 # Seed desktop with schema + accounts + categories + some income.
-# (Tracker auto-inits schema on master open, but we want realistic starting
-# balances so the walkthrough exercises richer scenarios.)
 node --experimental-strip-types - <<EOF
 import { Store } from "./src/index.ts";
 import { bankActions } from "./demo/actions.ts";
+const T0 = "1970-01-01T00:00:00.000Z";
 const s = Store.open({ root: "$ROOT/desktop", peerId: "desktop", masterId: "desktop", actions: bankActions });
 s.submit("init_bank", {});
-s.submit("create_account", { id: "checking", name: "Checking", ts: "1970-01-01T00:00:00.000Z" });
-s.submit("create_account", { id: "savings", name: "Savings", ts: "1970-01-01T00:00:00.000Z" });
-s.submit("create_category", { id: "food", name: "Food", kind: "expense", ts: "1970-01-01T00:00:00.000Z" });
-s.submit("create_category", { id: "rent", name: "Rent", kind: "expense", ts: "1970-01-01T00:00:00.000Z" });
-s.submit("create_category", { id: "salary", name: "Salary", kind: "income", ts: "1970-01-01T00:00:00.000Z" });
-s.submit("create_income", { id: "salary-1", acc_to: "checking", amount: 100, category_id: "salary", memo: "paycheck", ts: "1970-01-01T00:00:00.000Z" });
-s.submit("create_income", { id: "seed-sav", acc_to: "savings", amount: 200, category_id: null, memo: "initial savings", ts: "1970-01-01T00:00:00.000Z" });
+s.submit("create_account", { id: "checking", name: "Checking", ts: T0 });
+s.submit("create_account", { id: "savings", name: "Savings", ts: T0 });
+s.submit("create_category", { id: "food", name: "Food", kind: "expense", ts: T0 });
+s.submit("create_category", { id: "rent", name: "Rent", kind: "expense", ts: T0 });
+s.submit("create_category", { id: "salary", name: "Salary", kind: "income", ts: T0 });
+s.submit("create_income", { id: "salary-1", acc_to: "checking", amount: 100, category_id: "salary", memo: "paycheck", ts: T0 });
+s.submit("create_income", { id: "seed-sav", acc_to: "savings", amount: 200, category_id: null, memo: "initial savings", ts: T0 });
 await s.sync();
 s.close();
 EOF
@@ -71,13 +73,13 @@ type_in() { tmux send-keys -t "$S:$1" -l "$2"; sleep 0.05; tmux send-keys -t "$S
 enter()   { tmux send-keys -t "$S:$1" Enter; sleep 0.05; }
 pick()    { tmux send-keys -t "$S:$1" "$2"; sleep 0.05; }
 
-# --- STEP 1: phone catches up ------------------------------------------------
+# --- STEP 1: phone catches up -----------------------------------------------
 wait_for phone "ACCT checking" 15
 wait_for phone "\$100" 15
 show "STEP 1 — phone caught up: salary + initial savings reflected"
 
-# --- STEP 2: phone records a grocery expense ---------------------------------
-# Phone: n → e (expense) → amount=15 → from=Checking (1) → category=Food (3) → memo=pasta → id=groceries-1
+# --- STEP 2: phone records a grocery expense --------------------------------
+# Form: amount → from → category → memo (no ID prompt; auto-generated).
 press   phone n; wait_for phone "New transaction" 5
 press   phone e; wait_for phone "Amount" 5
 type_in phone "15"
@@ -87,11 +89,9 @@ wait_for phone "Category" 5
 pick    phone 2               # [1]none, [2]Food, [3]Rent, [4]Salary
 wait_for phone "Memo" 5
 type_in phone "pasta"
-wait_for phone "Tx id" 5
-type_in phone "groceries-1"
 converge
-wait_for desktop "TX groceries-1" 15
-show "STEP 2 — phone: expense \$15 submitted and propagated"
+wait_for desktop 'memo="pasta"' 15
+show "STEP 2 — phone: expense \$15 with memo=pasta, auto-id"
 
 # --- STEP 3: desktop pays rent ----------------------------------------------
 press   desktop n; wait_for desktop "New transaction" 5
@@ -103,13 +103,11 @@ wait_for desktop "Category" 5
 pick    desktop 3              # Rent
 wait_for desktop "Memo" 5
 type_in desktop "november"
-wait_for desktop "Tx id" 5
-type_in desktop "rent-1"
 converge
-wait_for phone "TX rent-1" 15
+wait_for phone 'memo="november"' 15
 show "STEP 3 — desktop: \$40 rent; phone sees it after sync"
 
-# --- STEP 4: transfer from checking to savings (between accounts) -----------
+# --- STEP 4: transfer checking → savings ------------------------------------
 press   phone n; wait_for phone "New transaction" 5
 press   phone x; wait_for phone "Amount" 5
 type_in phone "30"
@@ -119,35 +117,42 @@ wait_for phone "To" 5
 pick    phone 2                # Savings
 wait_for phone "Memo" 5
 type_in phone "monthly saving"
-wait_for phone "Tx id" 5
-type_in phone "save-1"
 converge
-wait_for desktop "TX save-1" 15
+wait_for desktop 'memo="monthly saving"' 15
 show "STEP 4 — phone transfers \$30 checking → savings"
 
-# --- STEP 5: commuting edits: phone memo + desktop category -----------------
-# Phone edits groceries-1's memo; desktop concurrently edits its category.
-press   phone e; wait_for phone "Edit transaction — pick field" 5
-press   phone m; wait_for phone "› Transaction:" 5
-# Seeded ts order: salary-1, seed-sav, groceries-1, rent-1, save-1 → groceries-1=3.
+# --- STEP 5: commuting edits: phone changes memo, desktop changes category --
+# Edit is one wizard: Transaction → Amount → Memo → Category.
+# tx order by ts: salary-1, seed-sav, pasta (step 2), rent (step 3), transfer
+# (step 4). Pasta = 3.
+press   phone e; wait_for phone "Edit transaction — pick one" 5
+wait_for phone "Transaction" 5
 pick    phone 3
-wait_for phone "New memo" 5
-type_in phone "pasta and wine"
+wait_for phone "Amount" 5
+enter   phone                  # keep amount
+wait_for phone "Memo" 5
+type_in phone "pasta and wine" # new memo
+wait_for phone "Category" 5
+pick    phone 1                # keep category
 
-press   desktop e; wait_for desktop "Edit transaction — pick field" 5
-press   desktop c; wait_for desktop "› Transaction:" 5
-pick    desktop 3            # groceries-1
+press   desktop e; wait_for desktop "Edit transaction — pick one" 5
+wait_for desktop "Transaction" 5
+pick    desktop 3
+wait_for desktop "Amount" 5
+enter   desktop
+wait_for desktop "Memo" 5
+enter   desktop                # keep memo
 wait_for desktop "Category" 5
-pick    desktop 2            # food
+pick    desktop 3              # [1]keep, [2]none, [3]food → food
 converge
-wait_for desktop "memo=\"pasta and wine\"" 15
+wait_for desktop 'memo="pasta and wine"' 15
 wait_for desktop "cat=Food" 15
 wait_for phone "cat=Food" 15
 show "STEP 5 — different-field edits on same tx commute: both land"
 
 # --- STEP 6: overdraft with retry+topup -------------------------------------
-# Current balances: checking = 100 - 15 - 40 - 30 = 15; savings = 200 + 30 = 230.
-# Desktop tries to spend $10, phone tries $12 — alone fine, together overdraft.
+# checking = 100 - 15 - 40 - 30 = 15; savings = 200 + 30 = 230.
+# Desktop spends $10, phone spends $12 — together would overdraft.
 press   desktop n; wait_for desktop "New transaction" 5
 press   desktop e; wait_for desktop "Amount" 5
 type_in desktop "10"
@@ -156,9 +161,7 @@ pick    desktop 1
 wait_for desktop "Category" 5
 pick    desktop 1
 wait_for desktop "Memo" 5
-enter   desktop
-wait_for desktop "Tx id" 5
-type_in desktop "gas-1"
+type_in desktop "gas"
 
 press   phone n; wait_for phone "New transaction" 5
 press   phone e; wait_for phone "Amount" 5
@@ -168,45 +171,42 @@ pick    phone 1
 wait_for phone "Category" 5
 pick    phone 1
 wait_for phone "Memo" 5
-enter   phone
-wait_for phone "Tx id" 5
-type_in phone "taxi-1"
+type_in phone "taxi"
 
 converge
-wait_for desktop "TX gas-1" 15
+wait_for desktop 'memo="gas"' 15
 wait_for phone "CONFLICT" 20
 
 press   phone r; wait_for phone "RETRY" 5
 type_in phone "20 savings checking topup"
-wait_for phone "TX taxi-1" 20
+wait_for phone 'memo="taxi"' 20
 converge
-wait_for desktop "TX taxi-1" 15
+wait_for desktop 'memo="taxi"' 15
+wait_for desktop 'memo="topup"' 15
 show "STEP 6 — overdraft! phone retried with a savings→checking topup"
 
-# --- STEP 7: delete a transaction --------------------------------------------
+# --- STEP 7: delete the taxi expense ----------------------------------------
 press   phone d; wait_for phone "Delete transaction" 5
-# Order-by-ts (seed ts=1970… comes first): salary-1, seed-sav, groceries-1,
-# rent-1, save-1, gas-1, taxi-1 (original submit), topup-… (retry). taxi-1 = 7.
+# tx order by ts after step 6: salary-1, seed-sav, pasta, rent, save, gas,
+# taxi (original), topup. taxi = 7.
 pick    phone 7
 converge
 wait_for phone "pending (0)" 15
-if tmux capture-pane -t "$S:desktop" -p | grep -q "TX taxi-1"; then
-  echo "taxi-1 should have been deleted!"; exit 1
+if tmux capture-pane -t "$S:desktop" -p | grep -q 'memo="taxi"'; then
+  echo "taxi memo should have been deleted!"; exit 1
 fi
-show "STEP 7 — phone deleted taxi-1; desktop no longer shows it"
+show "STEP 7 — phone deleted the taxi expense; desktop no longer shows it"
 
-# --- STEP 8: category CRUD round-trip on phone -------------------------------
+# --- STEP 8: category create → rename → delete (CRUD round-trip) ------------
 press   phone c; wait_for phone "\\[c\\] Categories" 5
 press   phone n; wait_for phone "Name" 5
 type_in phone "Entertainment"
 wait_for phone "Kind" 5
-pick    phone 2            # expense
-wait_for phone "Short id" 5
-type_in phone "fun"
-wait_for phone "CAT fun" 10
+pick    phone 2                # [1]income, [2]expense, [3]both
+wait_for phone "Entertainment" 10
 
-press   phone r; wait_for phone "Rename category" 5
-# Pick fun. Categories listed in insertion order: food, rent, salary, fun → fun=4.
+press   phone r; wait_for phone "Rename category — pick one" 5
+# Categories by created_at: food, rent, salary, Entertainment → #4.
 pick    phone 4
 wait_for phone "New name" 5
 type_in phone "Leisure"
@@ -217,8 +217,6 @@ pick    phone 4
 converge
 press   desktop c
 wait_for desktop "\\[c\\] Categories" 5
-# "fun" (Leisure) was created, renamed, and deleted on phone — desktop should
-# have also incorporated + removed it, so its category list matches phone's.
 if tmux capture-pane -t "$S:desktop" -p | grep -q "Leisure"; then
   echo "Leisure should have been deleted!"; exit 1
 fi

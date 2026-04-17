@@ -251,7 +251,7 @@ function TransactionsTab({
       })}
       <Box marginTop={1}>
         <Text dimColor>
-          [n]ew (i/e/x)  [e]dit (p/m/c)  [d]elete
+          [n]ew (i/e/x)  [e]dit  [d]elete
         </Text>
       </Box>
     </Box>
@@ -670,18 +670,19 @@ export function App({
         value: t.id,
       }));
 
+  // Chain to the next form after the current one closes cleanly. Deferred so
+  // React's close-then-open state transitions don't collapse into one render.
+  const chain = (next: FormSpec) => setTimeout(() => openForm(next), 0);
+
   // ACCOUNTS
   const newAccountForm = (): FormSpec => ({
     title: "New account",
-    fields: [
-      { type: "text", key: "name", label: "Display name" },
-      { type: "text", key: "id", label: "Short id (blank = auto)", optional: true },
-    ],
+    fields: [{ type: "text", key: "name", label: "Display name" }],
     onSubmit: (v) => {
-      const id = v.id || genId("acc");
+      const id = genId("acc");
       try {
         storeRef.current!.submit("create_account", { id, name: v.name, ts: nowTs() });
-        setOk(`created account ${id}`);
+        setOk(`created account ${v.name} (${id})`);
         return null;
       } catch (e) {
         return e instanceof Error ? e.message : String(e);
@@ -694,22 +695,39 @@ export function App({
       return null;
     }
     return {
-      title: "Rename account",
-      fields: [
-        { type: "select", key: "id", label: "Account", options: accountOptions() },
-        { type: "text", key: "name", label: "New name" },
-      ],
+      title: "Rename account — pick one",
+      fields: [{ type: "select", key: "id", label: "Account", options: accountOptions() }],
       onSubmit: (v) => {
-        try {
-          storeRef.current!.submit("rename_account", { id: v.id, name: v.name });
-          setOk(`renamed ${v.id}`);
-          return null;
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
+        const acc = accounts.find((a) => a.id === v.id);
+        if (!acc) return "account not found";
+        chain(renameAccountStep2(acc));
+        return null;
       },
     };
   };
+  const renameAccountStep2 = (acc: Account): FormSpec => ({
+    title: `Rename account "${acc.name}"`,
+    fields: [
+      {
+        type: "text",
+        key: "name",
+        label: `New name (current: "${acc.name}")`,
+      },
+    ],
+    onSubmit: (v) => {
+      if (v.name === acc.name) {
+        setInfo("unchanged");
+        return null;
+      }
+      try {
+        storeRef.current!.submit("rename_account", { id: acc.id, name: v.name });
+        setOk(`renamed to "${v.name}"`);
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+    },
+  });
   const deleteAccountForm = (): FormSpec | null => {
     if (accounts.length === 0) {
       setErr("no accounts to delete");
@@ -745,10 +763,9 @@ export function App({
           { label: "both", value: "both" },
         ],
       },
-      { type: "text", key: "id", label: "Short id (blank = auto)", optional: true },
     ],
     onSubmit: (v) => {
-      const id = v.id || genId("cat");
+      const id = genId("cat");
       try {
         storeRef.current!.submit("create_category", {
           id,
@@ -756,7 +773,7 @@ export function App({
           kind: v.kind as "income" | "expense" | "both",
           ts: nowTs(),
         });
-        setOk(`created category ${id}`);
+        setOk(`created category ${v.name} [${v.kind}] (${id})`);
         return null;
       } catch (e) {
         return e instanceof Error ? e.message : String(e);
@@ -769,27 +786,41 @@ export function App({
       return null;
     }
     return {
-      title: "Rename category",
+      title: "Rename category — pick one",
       fields: [
-        {
-          type: "select",
-          key: "id",
-          label: "Category",
-          options: categoryOptions(false),
-        },
-        { type: "text", key: "name", label: "New name" },
+        { type: "select", key: "id", label: "Category", options: categoryOptions(false) },
       ],
       onSubmit: (v) => {
-        try {
-          storeRef.current!.submit("rename_category", { id: v.id, name: v.name });
-          setOk(`renamed category ${v.id}`);
-          return null;
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
+        const cat = categories.find((c) => c.id === v.id);
+        if (!cat) return "category not found";
+        chain(renameCategoryStep2(cat));
+        return null;
       },
     };
   };
+  const renameCategoryStep2 = (cat: Category): FormSpec => ({
+    title: `Rename category "${cat.name}"`,
+    fields: [
+      {
+        type: "text",
+        key: "name",
+        label: `New name (current: "${cat.name}")`,
+      },
+    ],
+    onSubmit: (v) => {
+      if (v.name === cat.name) {
+        setInfo("unchanged");
+        return null;
+      }
+      try {
+        storeRef.current!.submit("rename_category", { id: cat.id, name: v.name });
+        setOk(`renamed to "${v.name}"`);
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+    },
+  });
   const deleteCategoryForm = (): FormSpec | null => {
     if (categories.length === 0) {
       setErr("no categories to delete");
@@ -830,10 +861,9 @@ export function App({
           options: categoryOptions(true),
         },
         { type: "text", key: "memo", label: "Memo (optional)", optional: true },
-        { type: "text", key: "id", label: "Tx id (blank = auto)", optional: true },
       ],
       onSubmit: (v) => {
-        const id = v.id || genId("inc");
+        const id = genId("inc");
         try {
           storeRef.current!.submit("create_income", {
             id,
@@ -843,7 +873,7 @@ export function App({
             memo: v.memo,
             ts: nowTs(),
           });
-          setOk(`income ${id}`);
+          setOk(`income +$${v.amount} → ${v.acc_to} (${id})`);
           return null;
         } catch (e) {
           return e instanceof Error ? e.message : String(e);
@@ -868,10 +898,9 @@ export function App({
           options: categoryOptions(true),
         },
         { type: "text", key: "memo", label: "Memo (optional)", optional: true },
-        { type: "text", key: "id", label: "Tx id (blank = auto)", optional: true },
       ],
       onSubmit: (v) => {
-        const id = v.id || genId("exp");
+        const id = genId("exp");
         try {
           storeRef.current!.submit("create_expense", {
             id,
@@ -881,7 +910,7 @@ export function App({
             memo: v.memo,
             ts: nowTs(),
           });
-          setOk(`expense ${id}`);
+          setOk(`expense -$${v.amount} from ${v.acc_from} (${id})`);
           return null;
         } catch (e) {
           return e instanceof Error ? e.message : String(e);
@@ -901,11 +930,10 @@ export function App({
         { type: "select", key: "acc_from", label: "From", options: accountOptions() },
         { type: "select", key: "acc_to", label: "To", options: accountOptions() },
         { type: "text", key: "memo", label: "Memo (optional)", optional: true },
-        { type: "text", key: "id", label: "Tx id (blank = auto)", optional: true },
       ],
       onSubmit: (v) => {
         if (v.acc_from === v.acc_to) return "from and to must differ";
-        const id = v.id || genId("tr");
+        const id = genId("tr");
         try {
           storeRef.current!.submit("create_transfer", {
             id,
@@ -915,7 +943,7 @@ export function App({
             memo: v.memo,
             ts: nowTs(),
           });
-          setOk(`transfer ${id}`);
+          setOk(`transfer $${v.amount}: ${v.acc_from} → ${v.acc_to} (${id})`);
           return null;
         } catch (e) {
           return e instanceof Error ? e.message : String(e);
@@ -923,76 +951,90 @@ export function App({
       },
     };
   };
-  const editAmountForm = (): FormSpec | null => {
+
+  /** Edit transaction — one wizard walks amount → memo → category. */
+  const editTxForm = (): FormSpec | null => {
     if (transactions.length === 0) {
       setErr("no transactions");
       return null;
     }
     return {
-      title: "Edit transaction amount",
+      title: "Edit transaction — pick one",
       fields: [
         { type: "select", key: "id", label: "Transaction", options: txOptions() },
-        { type: "number", key: "amount", label: "New amount", min: 1 },
       ],
       onSubmit: (v) => {
-        try {
-          storeRef.current!.submit("edit_tx_amount", {
-            id: v.id,
-            amount: Number(v.amount),
-          });
-          setOk(`amount updated for ${v.id}`);
-          return null;
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
+        const tx = transactions.find((t) => t.id === v.id);
+        if (!tx) return "not found";
+        chain(editTxStep2(tx));
+        return null;
       },
     };
   };
-  const editMemoForm = (): FormSpec | null => {
-    if (transactions.length === 0) {
-      setErr("no transactions");
-      return null;
-    }
+  const KEEP = "__keep__";
+  const editTxStep2 = (tx: Transaction): FormSpec => {
+    const catOpts = [
+      { label: "— keep current —", value: KEEP },
+      { label: "— none —", value: "" },
+      ...categories.map((c) => ({ label: `${c.name} [${c.kind}]`, value: c.id })),
+    ];
+    const memoLabel = tx.memo
+      ? `Memo (current: ${JSON.stringify(tx.memo)}, blank = keep)`
+      : `Memo (blank = keep empty)`;
     return {
-      title: "Edit transaction memo",
+      title: `Edit tx ${tx.id}`,
       fields: [
-        { type: "select", key: "id", label: "Transaction", options: txOptions() },
-        { type: "text", key: "memo", label: "New memo", optional: true },
-      ],
-      onSubmit: (v) => {
-        try {
-          storeRef.current!.submit("edit_tx_memo", { id: v.id, memo: v.memo });
-          setOk(`memo updated for ${v.id}`);
-          return null;
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e);
-        }
-      },
-    };
-  };
-  const editCategoryForm = (): FormSpec | null => {
-    if (transactions.length === 0) {
-      setErr("no transactions");
-      return null;
-    }
-    return {
-      title: "Edit transaction category",
-      fields: [
-        { type: "select", key: "id", label: "Transaction", options: txOptions() },
+        {
+          type: "text",
+          key: "amount",
+          label: `Amount (current: $${tx.amount}, blank = keep)`,
+          optional: true,
+        },
+        {
+          type: "text",
+          key: "memo",
+          label: memoLabel,
+          optional: true,
+        },
         {
           type: "select",
           key: "category_id",
-          label: "Category",
-          options: categoryOptions(true),
+          label: `Category (current: ${tx.category_id ? categories.find((c) => c.id === tx.category_id)?.name ?? tx.category_id : "—"})`,
+          options: catOpts,
         },
       ],
       onSubmit: (v) => {
+        const changes: string[] = [];
         try {
-          storeRef.current!.submit("edit_tx_category", {
-            id: v.id,
-            category_id: v.category_id || null,
-          });
-          setOk(`category updated for ${v.id}`);
+          if (v.amount !== "") {
+            const newAmount = Number(v.amount);
+            if (!Number.isFinite(newAmount) || newAmount <= 0) {
+              return `amount must be a positive number`;
+            }
+            if (newAmount !== tx.amount) {
+              storeRef.current!.submit("edit_tx_amount", { id: tx.id, amount: newAmount });
+              changes.push(`amount $${tx.amount}→$${newAmount}`);
+            }
+          }
+          // Memo: blank submitted = "keep" (matches the label). Distinguishing
+          // "blank = keep" from "intentionally clear" would require a sentinel
+          // but keeping empty memos is the rarer case.
+          if (v.memo !== "" && v.memo !== tx.memo) {
+            storeRef.current!.submit("edit_tx_memo", { id: tx.id, memo: v.memo });
+            changes.push(`memo`);
+          }
+          if (v.category_id !== KEEP) {
+            const newCat = v.category_id || null;
+            if (newCat !== tx.category_id) {
+              storeRef.current!.submit("edit_tx_category", {
+                id: tx.id,
+                category_id: newCat,
+              });
+              changes.push(`category`);
+            }
+          }
+          if (changes.length === 0) setInfo(`${tx.id} unchanged`);
+          else setOk(`edited ${tx.id}: ${changes.join(", ")}`);
           return null;
         } catch (e) {
           return e instanceof Error ? e.message : String(e);
@@ -1132,29 +1174,7 @@ export function App({
         });
         setMode("submenu");
       } else if (raw === "e") {
-        setSubmenu({
-          title: "Edit transaction — pick field",
-          options: [
-            ["p", "amount (price)"],
-            ["m", "memo"],
-            ["c", "category"],
-          ],
-          handlers: {
-            p: () => {
-              setSubmenu(null);
-              maybeOpen(editAmountForm());
-            },
-            m: () => {
-              setSubmenu(null);
-              maybeOpen(editMemoForm());
-            },
-            c: () => {
-              setSubmenu(null);
-              maybeOpen(editCategoryForm());
-            },
-          },
-        });
-        setMode("submenu");
+        maybeOpen(editTxForm());
       } else if (raw === "d") {
         maybeOpen(deleteTxForm());
       }
