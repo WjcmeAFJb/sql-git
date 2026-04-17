@@ -16,17 +16,36 @@ import type {
   SyncReport,
 } from "./types.ts";
 
-function masterSuffixAfter(store: Store, baseSeq: number): MasterActionEntry[] {
+function masterSuffixAfter(
+  store: Store,
+  baseSeq: number,
+  excludePeer?: string,
+): MasterActionEntry[] {
   return store.masterLog
-    .filter((e): e is MasterActionEntry => e.kind === "action" && e.seq > baseSeq)
+    .filter(
+      (e): e is MasterActionEntry =>
+        e.kind === "action" &&
+        e.seq > baseSeq &&
+        (excludePeer === undefined || e.source.peer !== excludePeer),
+    )
     .sort((a, b) => a.seq - b.seq);
 }
 
-function buildStateAt(store: Store, targetSeq: number): Db {
+function buildStateAt(
+  store: Store,
+  targetSeq: number,
+  alsoIncludeSamePeer?: string,
+): Db {
   const db = loadSnapshotToMemory(snapshotPath(store.root));
   const head = getSnapshotHead(db);
   const entries = store.masterLog
-    .filter((e): e is MasterActionEntry => e.kind === "action" && e.seq > head && e.seq <= targetSeq)
+    .filter(
+      (e): e is MasterActionEntry =>
+        e.kind === "action" &&
+        e.seq > head &&
+        (e.seq <= targetSeq ||
+          (alsoIncludeSamePeer !== undefined && e.source.peer === alsoIncludeSamePeer)),
+    )
     .sort((a, b) => a.seq - b.seq);
   for (const e of entries) applyAction(db, store.actions, e.name, e.params);
   return db;
@@ -137,8 +156,14 @@ export function runMasterSync(store: Store): SyncReport {
           ? { ok: false, kind: "non_commutative" }
           : { ok: true };
       } else {
-        const suffix = masterSuffixAfter(store, entry.baseMasterSeq);
-        const baseDb = suffix.length === 0 ? store.db : buildStateAt(store, entry.baseMasterSeq);
+        // Relaxed commutativity: same-peer entries in the log since
+        // `entry.baseMasterSeq` are treated as "intended prior context" for
+        // this action (e.g., a create+rename pair from the same peer), so
+        // they're excluded from the suffix used to check commutativity with
+        // other-peer incorporations.
+        const suffix = masterSuffixAfter(store, entry.baseMasterSeq, peerId);
+        const baseDb =
+          suffix.length === 0 ? store.db : buildStateAt(store, entry.baseMasterSeq, peerId);
         conflict = checkConflict({
           currentDb: store.db,
           baseDb,

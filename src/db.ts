@@ -6,6 +6,7 @@ export const META_TABLE = "__sqlgit_meta__";
 
 export function openDb(path: string): Db {
   const db = new Database(path);
+  db.pragma("foreign_keys = ON");
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
   initMeta(db);
@@ -14,6 +15,7 @@ export function openDb(path: string): Db {
 
 export function openMemoryDb(): Db {
   const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
   initMeta(db);
   return db;
 }
@@ -21,6 +23,7 @@ export function openMemoryDb(): Db {
 export function cloneDb(db: Db): Db {
   const buf = db.serialize();
   const cloned = new Database(buf);
+  cloned.pragma("foreign_keys = ON");
   return cloned;
 }
 

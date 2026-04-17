@@ -30,21 +30,16 @@ export class Term {
   }
 
   async start(command: string, opts: { cols?: number; rows?: number; cwd?: string } = {}): Promise<void> {
-    const args = [
-      "new-session",
-      "-d",
-      "-s",
-      this.name,
-      "-x",
-      String(opts.cols ?? 180),
-      "-y",
-      String(opts.rows ?? 50),
-    ];
-    if (opts.cwd) {
-      args.push("-c", opts.cwd);
-    }
+    const cols = opts.cols ?? 180;
+    const rows = opts.rows ?? 50;
+    const args = ["new-session", "-d", "-s", this.name, "-x", String(cols), "-y", String(rows)];
+    if (opts.cwd) args.push("-c", opts.cwd);
     args.push(command);
     await execFileP("tmux", args);
+    // Detached tmux sessions spawn with a default 80×24 pty regardless of
+    // -x/-y; resize-window actually sizes the pty so inner Ink apps see the
+    // intended width.
+    await execFileP("tmux", ["resize-window", "-t", this.name, "-x", String(cols), "-y", String(rows)]);
   }
 
   async sendText(text: string): Promise<void> {

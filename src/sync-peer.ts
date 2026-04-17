@@ -22,6 +22,7 @@ function buildMasterState(
   snapshotFile: string,
   targetSeq: number,
   actions: Store["actions"],
+  alsoIncludeSamePeer?: string,
 ): { db: Db; masterHead: number; snapshotHead: number } {
   const db = loadSnapshotToMemory(snapshotFile);
   const snapshotHead = getSnapshotHead(db);
@@ -30,7 +31,9 @@ function buildMasterState(
     .sort((a, b) => a.seq - b.seq);
   let masterHead = snapshotHead;
   for (const e of masterActions) {
-    if (e.seq > snapshotHead && e.seq <= targetSeq) {
+    const includeAboveTarget =
+      alsoIncludeSamePeer !== undefined && e.source.peer === alsoIncludeSamePeer;
+    if (e.seq > snapshotHead && (e.seq <= targetSeq || includeAboveTarget)) {
       applyAction(db, actions, e.name, e.params);
       if (e.seq > masterHead) masterHead = e.seq;
     }
@@ -87,14 +90,27 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
     let action: PeerActionEntry = origAction;
 
     while (true) {
-      const suffix = masterActions.filter((e) => e.seq > action.baseMasterSeq);
+      // Relaxed suffix: same-peer entries (including this peer's own prior
+      // actions already incorporated by master) don't count as interleavings —
+      // peer's intent is that its actions apply in its own log order.
+      const suffix = masterActions.filter(
+        (e) => e.seq > action.baseMasterSeq && e.source.peer !== store.peerId,
+      );
       let baseDb: Db;
       let baseIsRebased = false;
       if (suffix.length === 0) {
         baseDb = rebasedDb;
         baseIsRebased = true;
       } else {
-        baseDb = buildMasterState(masterLog, snapshotPath(store.root), action.baseMasterSeq, store.actions).db;
+        // baseDb needs to reflect state_at(base) PLUS this peer's own prior
+        // incorporations, so the current action sees its intended context.
+        baseDb = buildMasterState(
+          masterLog,
+          snapshotPath(store.root),
+          action.baseMasterSeq,
+          store.actions,
+          store.peerId,
+        ).db;
       }
 
       let conflict: ConflictResult;

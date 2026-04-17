@@ -6,6 +6,7 @@ import { initMeta } from "./db.ts";
 export function loadSnapshotToMemory(snapshotFile: string): Db {
   if (!existsSync(snapshotFile)) {
     const mem = new Database(":memory:");
+    mem.pragma("foreign_keys = ON");
     initMeta(mem);
     return mem;
   }
@@ -13,6 +14,7 @@ export function loadSnapshotToMemory(snapshotFile: string): Db {
   const buf = fileDb.serialize();
   fileDb.close();
   const mem = new Database(buf);
+  mem.pragma("foreign_keys = ON");
   initMeta(mem);
   return mem;
 }

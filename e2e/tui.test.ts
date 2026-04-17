@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { Scene, tmuxAvailable } from "./tmux.ts";
+import { Scene, Term, tmuxAvailable } from "./tmux.ts";
 
 const execFileP = promisify(execFile);
 const REPO = process.cwd();
@@ -25,65 +25,111 @@ async function seedMaster(root: string): Promise<void> {
   const s = mod.Store.open({ root, peerId: "master", masterId: "master", actions: bankActions });
   try {
     s.submit("init_bank", {});
-    s.submit("open_account", { id: "checking", initial: 100 });
-    s.submit("open_account", { id: "savings", initial: 200 });
-    s.submit("open_account", { id: "external", initial: 0 });
+    s.submit("create_account", { id: "checking", name: "Checking", ts: "t0" });
+    s.submit("create_account", { id: "savings", name: "Savings", ts: "t0" });
+    s.submit("create_category", { id: "food", name: "Food", kind: "expense", ts: "t0" });
+    s.submit("create_category", { id: "rent", name: "Rent", kind: "expense", ts: "t0" });
+    // seed balances
+    s.submit("create_income", {
+      id: "seed-chk",
+      acc_to: "checking",
+      amount: 100,
+      category_id: null,
+      memo: "initial",
+      ts: "t0",
+    });
+    s.submit("create_income", {
+      id: "seed-sav",
+      acc_to: "savings",
+      amount: 200,
+      category_id: null,
+      memo: "initial",
+      ts: "t0",
+    });
     await s.sync();
   } finally {
     s.close();
   }
 }
 
+// ─── UI drivers ──────────────────────────────────────────────────────────────
+async function submitExpense(t: Term, line: string): Promise<void> {
+  await t.sendKey("n");
+  await t.waitFor((s) => s.includes("New transaction"));
+  await t.sendKey("e");
+  await t.waitFor((s) => s.includes("New expense"));
+  await t.sendText(line);
+  await t.sendKey("Enter");
+}
+async function submitTransfer(t: Term, line: string): Promise<void> {
+  await t.sendKey("n");
+  await t.waitFor((s) => s.includes("New transaction"));
+  await t.sendKey("x");
+  await t.waitFor((s) => s.includes("New transfer"));
+  await t.sendText(line);
+  await t.sendKey("Enter");
+}
+async function editMemo(t: Term, line: string): Promise<void> {
+  await t.sendKey("e");
+  await t.waitFor((s) => s.includes("Edit transaction — pick field"));
+  await t.sendKey("m");
+  await t.waitFor((s) => s.includes("Edit transaction memo"));
+  await t.sendText(line);
+  await t.sendKey("Enter");
+}
+async function editCategory(t: Term, line: string): Promise<void> {
+  await t.sendKey("e");
+  await t.waitFor((s) => s.includes("Edit transaction — pick field"));
+  await t.sendKey("c");
+  await t.waitFor((s) => s.includes("Edit transaction category"));
+  await t.sendText(line);
+  await t.sendKey("Enter");
+}
+async function retryWithTransfer(t: Term, line: string): Promise<void> {
+  await t.sendKey("r");
+  await t.waitFor((s) => s.includes("RETRY"));
+  await t.sendText(line);
+  await t.sendKey("Enter");
+}
+
 describe.skipIf(!tmuxAvailable())("e2e: tracker TUI + manual syncer sync", () => {
   let scene: Scene;
-
   afterEach(async () => {
     await scene.teardown();
   });
 
-  it("happy path: alice submits a transfer, syncer sync propagates, master incorporates", async () => {
+  it("happy path: alice submits an expense, syncer propagates, master incorporates", async () => {
     scene = new Scene();
     const masterRoot = scene.tmpDir("master");
     const aliceRoot = scene.tmpDir("alice");
     await createHost(masterRoot, "master");
     await createHost(aliceRoot, "master");
     await seedMaster(masterRoot);
-
-    // Push seeded master state to alice first so her initial open sees it.
     await syncerSync([masterRoot, aliceRoot]);
 
-    const masterTerm = scene.spawn("master");
-    await masterTerm.start(trackerCmd(masterRoot, "master", "--watch-debounce 100"));
-    await masterTerm.waitFor((s) => s.includes("PEER=master") && s.includes("ACCT checking 100"));
+    const m = scene.spawn("master");
+    const a = scene.spawn("alice");
+    await m.start(trackerCmd(masterRoot, "master", "--watch-debounce 100"));
+    await a.start(trackerCmd(aliceRoot, "alice", "--watch-debounce 100"));
+    await m.waitFor((s) => s.includes("ACCT checking") && s.includes("$100"));
+    await a.waitFor((s) => s.includes("ACCT checking") && s.includes("$100"));
 
-    const aliceTerm = scene.spawn("alice");
-    await aliceTerm.start(trackerCmd(aliceRoot, "alice", "--watch-debounce 100"));
-    await aliceTerm.waitFor((s) => s.includes("ACCT checking 100"));
+    await submitExpense(a, "alice-1 checking 60 food morning-latte");
+    await a.waitFor((s) => s.includes("TX alice-1") && s.includes("$60"));
 
-    // Alice submits a transfer locally (offline — master has no idea yet).
-    await aliceTerm.sendKey("t");
-    await aliceTerm.waitFor((s) => s.includes("TRANSFER-FORM"));
-    await aliceTerm.sendText("alice-1 checking external 60");
-    await aliceTerm.sendKey("Enter");
-    await aliceTerm.waitFor((s) => s.includes("submitted alice-1"));
-
-    // Manual sync: "Syncthing delivers". The tracker's debounced watcher then re-syncs.
     await syncerSync([masterRoot, aliceRoot]);
-
-    await masterTerm.waitFor(
-      (s) => s.includes("TX alice-1") && s.includes("ACCT checking 40"),
-      { label: "master incorporated alice-1 after syncer sync", timeoutMs: 15000 },
+    await m.waitFor(
+      (s) => s.includes("TX alice-1") && s.includes("[expense]") && s.includes("$40"),
+      { label: "master incorporated alice-1 (expense)", timeoutMs: 15000 },
     );
-
-    // Bounce master's state back to alice so she sees the incorporation.
     await syncerSync([masterRoot, aliceRoot]);
-    await aliceTerm.waitFor(
-      (s) => s.includes("TX alice-1") && s.includes("ACCT checking 40"),
+    await a.waitFor(
+      (s) => s.includes("TX alice-1") && s.includes("ACCT checking") && s.includes("$40"),
       { label: "alice caught up with master", timeoutMs: 15000 },
     );
   }, 30000);
 
-  it("overdraft: bob drops the conflicting transfer", async () => {
+  it("overdraft: bob drops the conflicting expense", async () => {
     scene = new Scene();
     const masterRoot = scene.tmpDir("master");
     const aliceRoot = scene.tmpDir("alice");
@@ -100,45 +146,34 @@ describe.skipIf(!tmuxAvailable())("e2e: tracker TUI + manual syncer sync", () =>
     await m.start(trackerCmd(masterRoot, "master", "--watch-debounce 100"));
     await a.start(trackerCmd(aliceRoot, "alice", "--watch-debounce 100"));
     await b.start(trackerCmd(bobRoot, "bob", "--watch-debounce 100"));
-    await a.waitFor((s) => s.includes("ACCT checking 100"));
-    await b.waitFor((s) => s.includes("ACCT checking 100"));
+    await a.waitFor((s) => s.includes("$100"));
+    await b.waitFor((s) => s.includes("$100"));
 
-    // Both submit competing transfers — individually fine, together overdraft.
-    await a.sendKey("t");
-    await a.waitFor((s) => s.includes("TRANSFER-FORM"));
-    await a.sendText("alice-1 checking external 60");
-    await a.sendKey("Enter");
-    await a.waitFor((s) => s.includes("submitted alice-1"));
-    await b.sendKey("t");
-    await b.waitFor((s) => s.includes("TRANSFER-FORM"));
-    await b.sendText("bob-1 checking external 50");
-    await b.sendKey("Enter");
-    await b.waitFor((s) => s.includes("submitted bob-1"));
+    await submitExpense(a, "alice-1 checking 60");
+    await a.waitFor((s) => s.includes("TX alice-1"));
+    await submitExpense(b, "bob-1 checking 50");
+    await b.waitFor((s) => s.includes("TX bob-1"));
 
-    // Manual sync: alice's & bob's logs reach master; master's watcher triggers
-    // peer-sync which runs as master-side incorporation (alphabetical → alice wins,
-    // bob skipped).
     await syncerSync([masterRoot, aliceRoot, bobRoot]);
-    await m.waitFor((s) => s.includes("TX alice-1") && s.includes("ACCT checking 40"), {
-      label: "master applied alice",
-      timeoutMs: 15000,
-    });
-
-    // Master's updated log bounces back to bob; bob's watcher re-syncs, hits conflict.
+    await m.waitFor(
+      (s) => s.includes("TX alice-1") && s.includes("ACCT checking") && s.includes("$40"),
+      { label: "master applied alice's expense", timeoutMs: 15000 },
+    );
     await syncerSync([masterRoot, aliceRoot, bobRoot]);
-    await b.waitFor((s) => s.includes("CONFLICT kind=error"), {
-      label: "bob's rebase hit the overdraft conflict",
+    await b.waitFor((s) => s.includes("CONFLICT") && s.includes("kind=error"), {
+      label: "bob hit the overdraft conflict",
       timeoutMs: 15000,
     });
     await b.sendKey("d");
     await b.waitFor(
       (s) =>
-        s.includes("ACCT checking 40") &&
+        s.includes("ACCT checking") &&
+        s.includes("$40") &&
         s.includes("TX alice-1") &&
-        s.includes("-- pending (0) --"),
+        s.includes("pending (0)"),
       { label: "bob converged after dropping", timeoutMs: 15000 },
     );
-    expect(await m.screen()).toMatch(/ACCT checking 40/);
+    expect(await m.screen()).toMatch(/\$40/);
   }, 45000);
 
   it("overdraft: bob tops up from savings (retry with ctx.submit)", async () => {
@@ -158,50 +193,43 @@ describe.skipIf(!tmuxAvailable())("e2e: tracker TUI + manual syncer sync", () =>
     await m.start(trackerCmd(masterRoot, "master", "--watch-debounce 100"));
     await a.start(trackerCmd(aliceRoot, "alice", "--watch-debounce 100"));
     await b.start(trackerCmd(bobRoot, "bob", "--watch-debounce 100"));
-    await a.waitFor((s) => s.includes("ACCT checking 100"));
-    await b.waitFor((s) => s.includes("ACCT checking 100"));
+    await a.waitFor((s) => s.includes("$100"));
+    await b.waitFor((s) => s.includes("$100"));
 
-    await a.sendKey("t");
-    await a.waitFor((s) => s.includes("TRANSFER-FORM"));
-    await a.sendText("alice-1 checking external 60");
-    await a.sendKey("Enter");
-    await a.waitFor((s) => s.includes("submitted alice-1"));
-    await b.sendKey("t");
-    await b.waitFor((s) => s.includes("TRANSFER-FORM"));
-    await b.sendText("bob-1 checking external 50");
-    await b.sendKey("Enter");
-    await b.waitFor((s) => s.includes("submitted bob-1"));
-
+    await submitExpense(a, "alice-1 checking 60");
+    await submitExpense(b, "bob-1 checking 50");
     await syncerSync([masterRoot, aliceRoot, bobRoot]);
-    await m.waitFor((s) => s.includes("TX alice-1") && s.includes("ACCT checking 40"), {
+    await m.waitFor(
+      (s) => s.includes("TX alice-1") && s.includes("ACCT checking") && s.includes("$40"),
+      { timeoutMs: 15000 },
+    );
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
+    await b.waitFor((s) => s.includes("CONFLICT") && s.includes("kind=error"), {
       timeoutMs: 15000,
     });
-    await syncerSync([masterRoot, aliceRoot, bobRoot]);
-    await b.waitFor((s) => s.includes("CONFLICT kind=error"), { timeoutMs: 15000 });
 
-    // Retry with a topup from savings.
-    await b.sendKey("r");
-    await b.waitFor((s) => s.includes("RETRY-FORM"));
-    await b.sendText("bob-topup savings checking 20");
-    await b.sendKey("Enter");
+    // Retry: topup 20 from savings → checking (making 60), then retry bob's 50 expense (→ 10).
+    await retryWithTransfer(b, "bob-topup savings checking 20");
     await b.waitFor(
       (s) =>
-        s.includes("ACCT checking 10") &&
-        s.includes("ACCT savings 180") &&
         s.includes("TX bob-topup") &&
-        s.includes("TX bob-1"),
-      { label: "bob's local state after topup + retry", timeoutMs: 15000 },
+        s.includes("TX bob-1") &&
+        s.includes("ACCT checking") &&
+        s.includes("$10") &&
+        s.includes("ACCT savings") &&
+        s.includes("$180"),
+      { label: "bob's local state after topup+retry", timeoutMs: 15000 },
     );
 
-    // Final sync round: master picks up bob's two new entries.
     await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await m.waitFor(
       (s) =>
         s.includes("TX bob-topup") &&
         s.includes("TX bob-1") &&
-        s.includes("ACCT checking 10") &&
-        s.includes("ACCT savings 180") &&
-        s.includes("ACCT external 110"),
+        s.includes("ACCT checking") &&
+        s.includes("$10") &&
+        s.includes("ACCT savings") &&
+        s.includes("$180"),
       { label: "master incorporated topup + bob-1", timeoutMs: 15000 },
     );
   }, 60000);
@@ -223,42 +251,29 @@ describe.skipIf(!tmuxAvailable())("e2e: tracker TUI + manual syncer sync", () =>
     await m.start(trackerCmd(masterRoot, "master", "--watch-debounce 100"));
     await a.start(trackerCmd(aliceRoot, "alice", "--watch-debounce 100"));
     await b.start(trackerCmd(bobRoot, "bob", "--watch-debounce 100"));
-    await a.waitFor((s) => s.includes("ACCT checking 100"));
-    await b.waitFor((s) => s.includes("ACCT checking 100"));
+    await a.waitFor((s) => s.includes("$100"));
+    await b.waitFor((s) => s.includes("$100"));
 
-    // Seed a shared transaction everyone sees.
-    await a.sendKey("t");
-    await a.waitFor((s) => s.includes("TRANSFER-FORM"));
-    await a.sendText("tx-shared checking external 10");
-    await a.sendKey("Enter");
-    await a.waitFor((s) => s.includes("submitted tx-shared"));
+    // Seed a shared expense and let it converge everywhere.
+    await submitExpense(a, "tx-shared checking 10");
     await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await m.waitFor((s) => s.includes("TX tx-shared"), { timeoutMs: 15000 });
     await syncerSync([masterRoot, aliceRoot, bobRoot]);
-    await a.waitFor((s) => s.includes("TX tx-shared") && s.includes("-- pending (0) --"), {
+    await a.waitFor((s) => s.includes("TX tx-shared") && s.includes("pending (0)"), {
       timeoutMs: 15000,
     });
     await b.waitFor((s) => s.includes("TX tx-shared"), { timeoutMs: 15000 });
 
-    // Alice edits memo, bob edits category — different fields → commute.
-    await a.sendKey("m");
-    await a.waitFor((s) => s.includes("MEMO-FORM"));
-    await a.sendText("tx-shared groceries and snacks");
-    await a.sendKey("Enter");
-    await a.waitFor((s) => s.includes(`memo=${JSON.stringify("groceries and snacks")}`));
-
-    await b.sendKey("c");
-    await b.waitFor((s) => s.includes("CATEGORY-FORM"));
-    await b.sendText("tx-shared food");
-    await b.sendKey("Enter");
-    await b.waitFor((s) => s.includes("cat=food"));
+    // Different-field edits → commute.
+    await editMemo(a, "tx-shared morning-latte");
+    await editCategory(b, "tx-shared food");
+    await a.waitFor((s) => s.includes("morning-latte"));
+    await b.waitFor((s) => s.includes("cat=Food"));
 
     await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await m.waitFor(
-      (s) =>
-        s.includes(`memo=${JSON.stringify("groceries and snacks")}`) &&
-        s.includes("cat=food"),
-      { label: "master incorporated both commuting edits", timeoutMs: 20000 },
+      (s) => s.includes("morning-latte") && s.includes("cat=Food"),
+      { label: "master has both commuting edits", timeoutMs: 20000 },
     );
   }, 60000);
 
@@ -279,50 +294,118 @@ describe.skipIf(!tmuxAvailable())("e2e: tracker TUI + manual syncer sync", () =>
     await m.start(trackerCmd(masterRoot, "master", "--watch-debounce 100"));
     await a.start(trackerCmd(aliceRoot, "alice", "--watch-debounce 100"));
     await b.start(trackerCmd(bobRoot, "bob", "--watch-debounce 100"));
-    await a.waitFor((s) => s.includes("ACCT checking 100"));
-    await b.waitFor((s) => s.includes("ACCT checking 100"));
+    await a.waitFor((s) => s.includes("$100"));
+    await b.waitFor((s) => s.includes("$100"));
 
-    await a.sendKey("t");
-    await a.waitFor((s) => s.includes("TRANSFER-FORM"));
-    await a.sendText("tx-shared checking external 10");
-    await a.sendKey("Enter");
-    await a.waitFor((s) => s.includes("submitted"));
+    await submitExpense(a, "tx-shared checking 10");
     await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await m.waitFor((s) => s.includes("TX tx-shared"), { timeoutMs: 15000 });
     await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await b.waitFor((s) => s.includes("TX tx-shared"), { timeoutMs: 15000 });
-    await a.waitFor((s) => s.includes("-- pending (0) --") && s.includes("TX tx-shared"), {
+    await a.waitFor((s) => s.includes("pending (0)") && s.includes("TX tx-shared"), {
       timeoutMs: 15000,
     });
 
-    // Both edit the same memo to different values.
-    await a.sendKey("m");
-    await a.waitFor((s) => s.includes("MEMO-FORM"));
-    await a.sendText("tx-shared alice-memo");
-    await a.sendKey("Enter");
-    await a.waitFor((s) => s.includes(`memo=${JSON.stringify("alice-memo")}`));
-    await b.sendKey("m");
-    await b.waitFor((s) => s.includes("MEMO-FORM"));
-    await b.sendText("tx-shared bob-memo");
-    await b.sendKey("Enter");
-    await b.waitFor((s) => s.includes(`memo=${JSON.stringify("bob-memo")}`));
+    // Both change the memo to different values.
+    await editMemo(a, "tx-shared alice-memo");
+    await editMemo(b, "tx-shared bob-memo");
+    await a.waitFor((s) => s.includes("alice-memo"));
+    await b.waitFor((s) => s.includes("bob-memo"));
 
     await syncerSync([masterRoot, aliceRoot, bobRoot]);
-    await m.waitFor((s) => s.includes(`memo=${JSON.stringify("alice-memo")}`), {
+    await m.waitFor((s) => s.includes("alice-memo"), {
       label: "master picked alice's memo",
       timeoutMs: 15000,
     });
     await syncerSync([masterRoot, aliceRoot, bobRoot]);
-    await b.waitFor((s) => s.includes("CONFLICT kind=non_commutative"), {
+    await b.waitFor((s) => s.includes("CONFLICT") && s.includes("kind=non_commutative"), {
       label: "bob's rebase hit non-commutative",
       timeoutMs: 15000,
     });
     await b.sendKey("d");
     await b.waitFor(
-      (s) =>
-        s.includes(`memo=${JSON.stringify("alice-memo")}`) &&
-        s.includes("-- pending (0) --"),
+      (s) => s.includes("alice-memo") && s.includes("pending (0)"),
       { label: "bob converged to alice's memo", timeoutMs: 15000 },
     );
   }, 60000);
+
+  it("CRUD: create/rename/delete for accounts and categories; delete transaction", async () => {
+    scene = new Scene();
+    const masterRoot = scene.tmpDir("master");
+    const aliceRoot = scene.tmpDir("alice");
+    await createHost(masterRoot, "master");
+    await createHost(aliceRoot, "master");
+    await seedMaster(masterRoot);
+    await syncerSync([masterRoot, aliceRoot]);
+
+    const m = scene.spawn("master");
+    const a = scene.spawn("alice");
+    await m.start(trackerCmd(masterRoot, "master", "--watch-debounce 100"));
+    await a.start(trackerCmd(aliceRoot, "alice", "--watch-debounce 100"));
+    await a.waitFor((s) => s.includes("$100"));
+
+    // Alice: create a new account, rename it.
+    await a.sendKey("a"); // accounts tab
+    await a.waitFor((s) => s.includes("[a] Accounts"));
+    await a.sendKey("n");
+    await a.waitFor((s) => s.includes("New account"));
+    await a.sendText("cash Wallet");
+    await a.sendKey("Enter");
+    await a.waitFor((s) => s.includes("ACCT cash") && s.includes("Wallet"));
+
+    await a.sendKey("r");
+    await a.waitFor((s) => s.includes("Rename account"));
+    await a.sendText("cash Pocket-Cash");
+    await a.sendKey("Enter");
+    await a.waitFor((s) => s.includes("Pocket-Cash"));
+
+    // Create a category (transport).
+    await a.sendKey("c");
+    await a.waitFor((s) => s.includes("Categories"));
+    await a.sendKey("n");
+    await a.waitFor((s) => s.includes("New category"));
+    await a.sendText("transport Transport expense");
+    await a.sendKey("Enter");
+    await a.waitFor((s) => s.includes("CAT transport") && s.includes("[expense]"));
+
+    // Rename category.
+    await a.sendKey("r");
+    await a.waitFor((s) => s.includes("Rename category"));
+    await a.sendText("transport Travel");
+    await a.sendKey("Enter");
+    await a.waitFor((s) => s.includes("CAT transport") && s.includes("Travel"));
+
+    // Make a transaction that uses the new category, then delete it.
+    await a.sendKey("t"); // transactions tab
+    await a.waitFor((s) => s.includes("[t] Transactions"));
+    await submitExpense(a, "gas-1 checking 20 transport fuel");
+    await a.waitFor((s) => s.includes("TX gas-1") && s.includes("cat=Travel"));
+    await a.sendKey("d");
+    await a.waitFor((s) => s.includes("Delete transaction"));
+    await a.sendText("gas-1");
+    await a.sendKey("Enter");
+    await a.waitFor(
+      (s) => !s.includes("TX gas-1") && s.includes("ACCT checking"),
+      { label: "gas-1 deleted; balance restored" },
+    );
+
+    // Propagate everything.
+    await syncerSync([masterRoot, aliceRoot]);
+    // Verify on master by visiting each tab.
+    await m.sendKey("a");
+    await m.waitFor(
+      (s) => s.includes("ACCT cash") && s.includes("Pocket-Cash"),
+      { label: "master sees renamed account", timeoutMs: 15000 },
+    );
+    await m.sendKey("c");
+    await m.waitFor(
+      (s) => s.includes("CAT transport") && s.includes("Travel"),
+      { label: "master sees renamed category", timeoutMs: 15000 },
+    );
+    await m.sendKey("t");
+    await m.waitFor(
+      (s) => !s.includes("TX gas-1"),
+      { label: "gas-1 deletion propagated to master", timeoutMs: 15000 },
+    );
+  }, 45000);
 });
