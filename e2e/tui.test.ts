@@ -1,23 +1,22 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { Scene, Term, tmuxAvailable } from "./tmux.ts";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { Scene, tmuxAvailable } from "./tmux.ts";
 
+const execFileP = promisify(execFile);
 const REPO = process.cwd();
 const TSX = "./node_modules/.bin/tsx";
 
-function demoCmd(root: string, peerId: string, masterId: string, extra = ""): string {
-  return `${TSX} ${REPO}/demo/cli.tsx --root ${root} --peer ${peerId} --master ${masterId} ${extra}`;
+function trackerCmd(root: string, peerId: string, extra = ""): string {
+  return `${TSX} ${REPO}/demo/tracker.tsx ${root} --peer-id ${peerId} ${extra}`;
 }
 
-function syncCmd(
-  hosts: Array<{ peer: string; root: string }>,
-  masterId: string,
-  mode: "watch" | "one-shot" = "watch",
-  extra = "",
-): string {
-  const hostArgs = hosts.map((h) => `--host ${h.peer}=${h.root}`).join(" ");
-  return `${TSX} ${REPO}/demo/sync.ts ${mode} ${hostArgs} --master ${masterId} --debounce 100 -v ${extra}`;
+async function createHost(path: string, masterId: string): Promise<void> {
+  await execFileP(TSX, [`${REPO}/demo/syncer.ts`, "create-host", path, "--master", masterId]);
+}
+
+async function syncerSync(hosts: string[]): Promise<void> {
+  await execFileP(TSX, [`${REPO}/demo/syncer.ts`, "sync", ...hosts]);
 }
 
 async function seedMaster(root: string): Promise<void> {
@@ -35,54 +34,53 @@ async function seedMaster(root: string): Promise<void> {
   }
 }
 
-describe.skipIf(!tmuxAvailable())("e2e: ink TUI + syncer", () => {
+describe.skipIf(!tmuxAvailable())("e2e: tracker TUI + manual syncer sync", () => {
   let scene: Scene;
 
   afterEach(async () => {
     await scene.teardown();
   });
 
-  it("happy path: alice submits a transfer, syncer propagates, master incorporates", async () => {
+  it("happy path: alice submits a transfer, syncer sync propagates, master incorporates", async () => {
     scene = new Scene();
     const masterRoot = scene.tmpDir("master");
     const aliceRoot = scene.tmpDir("alice");
-    mkdirSync(masterRoot, { recursive: true });
-    mkdirSync(aliceRoot, { recursive: true });
+    await createHost(masterRoot, "master");
+    await createHost(aliceRoot, "master");
     await seedMaster(masterRoot);
 
+    // Push seeded master state to alice first so her initial open sees it.
+    await syncerSync([masterRoot, aliceRoot]);
+
     const masterTerm = scene.spawn("master");
-    await masterTerm.start(demoCmd(masterRoot, "master", "master", "--watch-debounce 100"));
+    await masterTerm.start(trackerCmd(masterRoot, "master", "--watch-debounce 100"));
     await masterTerm.waitFor((s) => s.includes("PEER=master") && s.includes("ACCT checking 100"));
 
-    const syncer = scene.spawn("syncer");
-    await syncer.start(
-      syncCmd([{ peer: "master", root: masterRoot }, { peer: "alice", root: aliceRoot }], "master"),
-    );
-
     const aliceTerm = scene.spawn("alice");
-    await aliceTerm.start(demoCmd(aliceRoot, "alice", "master", "--watch-debounce 100"));
-    await aliceTerm.waitFor((s) => s.includes("ACCT checking 100"), {
-      label: "alice auto-catches-up via syncer",
-    });
+    await aliceTerm.start(trackerCmd(aliceRoot, "alice", "--watch-debounce 100"));
+    await aliceTerm.waitFor((s) => s.includes("ACCT checking 100"));
 
-    // Submit a transfer on alice: t → form → "alice-1 checking external 60" → Enter.
+    // Alice submits a transfer locally (offline — master has no idea yet).
     await aliceTerm.sendKey("t");
     await aliceTerm.waitFor((s) => s.includes("TRANSFER-FORM"));
     await aliceTerm.sendText("alice-1 checking external 60");
     await aliceTerm.sendKey("Enter");
+    await aliceTerm.waitFor((s) => s.includes("submitted alice-1"));
 
-    await aliceTerm.waitFor((s) => s.includes("submitted alice-1"), {
-      label: "alice submitted locally",
-    });
+    // Manual sync: "Syncthing delivers". The tracker's debounced watcher then re-syncs.
+    await syncerSync([masterRoot, aliceRoot]);
 
-    await masterTerm.waitFor((s) => s.includes("TX alice-1") && s.includes("ACCT checking 40"), {
-      label: "master incorporated alice-1 via syncer+watch",
-      timeoutMs: 15000,
-    });
-    await aliceTerm.waitFor((s) => s.includes("TX alice-1") && s.includes("ACCT checking 40"), {
-      label: "alice sees master's incorporation",
-      timeoutMs: 15000,
-    });
+    await masterTerm.waitFor(
+      (s) => s.includes("TX alice-1") && s.includes("ACCT checking 40"),
+      { label: "master incorporated alice-1 after syncer sync", timeoutMs: 15000 },
+    );
+
+    // Bounce master's state back to alice so she sees the incorporation.
+    await syncerSync([masterRoot, aliceRoot]);
+    await aliceTerm.waitFor(
+      (s) => s.includes("TX alice-1") && s.includes("ACCT checking 40"),
+      { label: "alice caught up with master", timeoutMs: 15000 },
+    );
   }, 30000);
 
   it("overdraft: bob drops the conflicting transfer", async () => {
@@ -90,28 +88,20 @@ describe.skipIf(!tmuxAvailable())("e2e: ink TUI + syncer", () => {
     const masterRoot = scene.tmpDir("master");
     const aliceRoot = scene.tmpDir("alice");
     const bobRoot = scene.tmpDir("bob");
+    await createHost(masterRoot, "master");
+    await createHost(aliceRoot, "master");
+    await createHost(bobRoot, "master");
     await seedMaster(masterRoot);
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
 
     const m = scene.spawn("master");
     const a = scene.spawn("alice");
     const b = scene.spawn("bob");
-    const sy = scene.spawn("syncer");
-
-    await m.start(demoCmd(masterRoot, "master", "master", "--watch-debounce 150"));
-    await sy.start(
-      syncCmd(
-        [
-          { peer: "master", root: masterRoot },
-          { peer: "alice", root: aliceRoot },
-          { peer: "bob", root: bobRoot },
-        ],
-        "master",
-      ),
-    );
-    await a.start(demoCmd(aliceRoot, "alice", "master", "--watch-debounce 150"));
-    await b.start(demoCmd(bobRoot, "bob", "master", "--watch-debounce 150"));
-    await a.waitFor((s) => s.includes("ACCT checking 100"), { label: "alice caught up" });
-    await b.waitFor((s) => s.includes("ACCT checking 100"), { label: "bob caught up" });
+    await m.start(trackerCmd(masterRoot, "master", "--watch-debounce 100"));
+    await a.start(trackerCmd(aliceRoot, "alice", "--watch-debounce 100"));
+    await b.start(trackerCmd(bobRoot, "bob", "--watch-debounce 100"));
+    await a.waitFor((s) => s.includes("ACCT checking 100"));
+    await b.waitFor((s) => s.includes("ACCT checking 100"));
 
     // Both submit competing transfers — individually fine, together overdraft.
     await a.sendKey("t");
@@ -125,15 +115,19 @@ describe.skipIf(!tmuxAvailable())("e2e: ink TUI + syncer", () => {
     await b.sendKey("Enter");
     await b.waitFor((s) => s.includes("submitted bob-1"));
 
-    // Syncer + watchers auto-sync: master picks up alice, bob conflicts.
+    // Manual sync: alice's & bob's logs reach master; master's watcher triggers
+    // peer-sync which runs as master-side incorporation (alphabetical → alice wins,
+    // bob skipped).
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await m.waitFor((s) => s.includes("TX alice-1") && s.includes("ACCT checking 40"), {
       label: "master applied alice",
       timeoutMs: 15000,
     });
 
-    // Bob's auto-sync (after master.jsonl arrives) enters conflict mode on his own action.
+    // Master's updated log bounces back to bob; bob's watcher re-syncs, hits conflict.
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await b.waitFor((s) => s.includes("CONFLICT kind=error"), {
-      label: "bob's auto-sync entered conflict mode",
+      label: "bob's rebase hit the overdraft conflict",
       timeoutMs: 15000,
     });
     await b.sendKey("d");
@@ -144,7 +138,6 @@ describe.skipIf(!tmuxAvailable())("e2e: ink TUI + syncer", () => {
         s.includes("-- pending (0) --"),
       { label: "bob converged after dropping", timeoutMs: 15000 },
     );
-
     expect(await m.screen()).toMatch(/ACCT checking 40/);
   }, 45000);
 
@@ -153,26 +146,18 @@ describe.skipIf(!tmuxAvailable())("e2e: ink TUI + syncer", () => {
     const masterRoot = scene.tmpDir("master");
     const aliceRoot = scene.tmpDir("alice");
     const bobRoot = scene.tmpDir("bob");
+    await createHost(masterRoot, "master");
+    await createHost(aliceRoot, "master");
+    await createHost(bobRoot, "master");
     await seedMaster(masterRoot);
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
 
     const m = scene.spawn("master");
     const a = scene.spawn("alice");
     const b = scene.spawn("bob");
-    const sy = scene.spawn("syncer");
-    await m.start(demoCmd(masterRoot, "master", "master", "--watch-debounce 150"));
-    await sy.start(
-      syncCmd(
-        [
-          { peer: "master", root: masterRoot },
-          { peer: "alice", root: aliceRoot },
-          { peer: "bob", root: bobRoot },
-        ],
-        "master",
-      ),
-    );
-    await a.start(demoCmd(aliceRoot, "alice", "master", "--watch-debounce 150"));
-    await b.start(demoCmd(bobRoot, "bob", "master", "--watch-debounce 150"));
-
+    await m.start(trackerCmd(masterRoot, "master", "--watch-debounce 100"));
+    await a.start(trackerCmd(aliceRoot, "alice", "--watch-debounce 100"));
+    await b.start(trackerCmd(bobRoot, "bob", "--watch-debounce 100"));
     await a.waitFor((s) => s.includes("ACCT checking 100"));
     await b.waitFor((s) => s.includes("ACCT checking 100"));
 
@@ -181,24 +166,20 @@ describe.skipIf(!tmuxAvailable())("e2e: ink TUI + syncer", () => {
     await a.sendText("alice-1 checking external 60");
     await a.sendKey("Enter");
     await a.waitFor((s) => s.includes("submitted alice-1"));
-
     await b.sendKey("t");
     await b.waitFor((s) => s.includes("TRANSFER-FORM"));
     await b.sendText("bob-1 checking external 50");
     await b.sendKey("Enter");
     await b.waitFor((s) => s.includes("submitted bob-1"));
 
-    // Wait for master to incorporate alice.
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await m.waitFor((s) => s.includes("TX alice-1") && s.includes("ACCT checking 40"), {
-      label: "master applied alice",
       timeoutMs: 15000,
     });
-    // Bob's auto-sync enters conflict mode on his own action.
-    await b.waitFor((s) => s.includes("CONFLICT kind=error"), {
-      label: "bob in conflict",
-      timeoutMs: 15000,
-    });
-    // Bob retries: 'r' → prepend a topup → Enter → resolver returns "retry"
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
+    await b.waitFor((s) => s.includes("CONFLICT kind=error"), { timeoutMs: 15000 });
+
+    // Retry with a topup from savings.
     await b.sendKey("r");
     await b.waitFor((s) => s.includes("RETRY-FORM"));
     await b.sendText("bob-topup savings checking 20");
@@ -209,10 +190,11 @@ describe.skipIf(!tmuxAvailable())("e2e: ink TUI + syncer", () => {
         s.includes("ACCT savings 180") &&
         s.includes("TX bob-topup") &&
         s.includes("TX bob-1"),
-      { label: "bob's local state reflects topup + retry", timeoutMs: 15000 },
+      { label: "bob's local state after topup + retry", timeoutMs: 15000 },
     );
 
-    // Watchers propagate: master incorporates topup + retried bob-1.
+    // Final sync round: master picks up bob's two new entries.
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await m.waitFor(
       (s) =>
         s.includes("TX bob-topup") &&
@@ -229,35 +211,30 @@ describe.skipIf(!tmuxAvailable())("e2e: ink TUI + syncer", () => {
     const masterRoot = scene.tmpDir("master");
     const aliceRoot = scene.tmpDir("alice");
     const bobRoot = scene.tmpDir("bob");
+    await createHost(masterRoot, "master");
+    await createHost(aliceRoot, "master");
+    await createHost(bobRoot, "master");
     await seedMaster(masterRoot);
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
 
     const m = scene.spawn("master");
     const a = scene.spawn("alice");
     const b = scene.spawn("bob");
-    const sy = scene.spawn("syncer");
-    await m.start(demoCmd(masterRoot, "master", "master", "--watch-debounce 150"));
-    await sy.start(
-      syncCmd(
-        [
-          { peer: "master", root: masterRoot },
-          { peer: "alice", root: aliceRoot },
-          { peer: "bob", root: bobRoot },
-        ],
-        "master",
-      ),
-    );
-    await a.start(demoCmd(aliceRoot, "alice", "master", "--watch-debounce 150"));
-    await b.start(demoCmd(bobRoot, "bob", "master", "--watch-debounce 150"));
+    await m.start(trackerCmd(masterRoot, "master", "--watch-debounce 100"));
+    await a.start(trackerCmd(aliceRoot, "alice", "--watch-debounce 100"));
+    await b.start(trackerCmd(bobRoot, "bob", "--watch-debounce 100"));
     await a.waitFor((s) => s.includes("ACCT checking 100"));
     await b.waitFor((s) => s.includes("ACCT checking 100"));
 
-    // Alice creates a transfer; wait for it to converge on all three.
+    // Seed a shared transaction everyone sees.
     await a.sendKey("t");
     await a.waitFor((s) => s.includes("TRANSFER-FORM"));
     await a.sendText("tx-shared checking external 10");
     await a.sendKey("Enter");
     await a.waitFor((s) => s.includes("submitted tx-shared"));
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await m.waitFor((s) => s.includes("TX tx-shared"), { timeoutMs: 15000 });
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await a.waitFor((s) => s.includes("TX tx-shared") && s.includes("-- pending (0) --"), {
       timeoutMs: 15000,
     });
@@ -268,15 +245,15 @@ describe.skipIf(!tmuxAvailable())("e2e: ink TUI + syncer", () => {
     await a.waitFor((s) => s.includes("MEMO-FORM"));
     await a.sendText("tx-shared groceries and snacks");
     await a.sendKey("Enter");
-    await a.waitFor((s) => s.includes("memo-updated tx-shared"));
+    await a.waitFor((s) => s.includes(`memo=${JSON.stringify("groceries and snacks")}`));
 
     await b.sendKey("c");
     await b.waitFor((s) => s.includes("CATEGORY-FORM"));
     await b.sendText("tx-shared food");
     await b.sendKey("Enter");
-    await b.waitFor((s) => s.includes("category-updated tx-shared"));
+    await b.waitFor((s) => s.includes("cat=food"));
 
-    // Watchers propagate; commutativity check passes; both land on master.
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await m.waitFor(
       (s) =>
         s.includes(`memo=${JSON.stringify("groceries and snacks")}`) &&
@@ -290,61 +267,54 @@ describe.skipIf(!tmuxAvailable())("e2e: ink TUI + syncer", () => {
     const masterRoot = scene.tmpDir("master");
     const aliceRoot = scene.tmpDir("alice");
     const bobRoot = scene.tmpDir("bob");
+    await createHost(masterRoot, "master");
+    await createHost(aliceRoot, "master");
+    await createHost(bobRoot, "master");
     await seedMaster(masterRoot);
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
 
     const m = scene.spawn("master");
     const a = scene.spawn("alice");
     const b = scene.spawn("bob");
-    const sy = scene.spawn("syncer");
-    await m.start(demoCmd(masterRoot, "master", "master", "--watch-debounce 150"));
-    await sy.start(
-      syncCmd(
-        [
-          { peer: "master", root: masterRoot },
-          { peer: "alice", root: aliceRoot },
-          { peer: "bob", root: bobRoot },
-        ],
-        "master",
-      ),
-    );
-    await a.start(demoCmd(aliceRoot, "alice", "master", "--watch-debounce 150"));
-    await b.start(demoCmd(bobRoot, "bob", "master", "--watch-debounce 150"));
+    await m.start(trackerCmd(masterRoot, "master", "--watch-debounce 100"));
+    await a.start(trackerCmd(aliceRoot, "alice", "--watch-debounce 100"));
+    await b.start(trackerCmd(bobRoot, "bob", "--watch-debounce 100"));
     await a.waitFor((s) => s.includes("ACCT checking 100"));
     await b.waitFor((s) => s.includes("ACCT checking 100"));
 
-    // Seed a shared transaction; wait for convergence.
     await a.sendKey("t");
     await a.waitFor((s) => s.includes("TRANSFER-FORM"));
     await a.sendText("tx-shared checking external 10");
     await a.sendKey("Enter");
     await a.waitFor((s) => s.includes("submitted"));
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await m.waitFor((s) => s.includes("TX tx-shared"), { timeoutMs: 15000 });
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await b.waitFor((s) => s.includes("TX tx-shared"), { timeoutMs: 15000 });
     await a.waitFor((s) => s.includes("-- pending (0) --") && s.includes("TX tx-shared"), {
       timeoutMs: 15000,
     });
 
-    // Both edit the same memo to different values. (Status flickers through
-    // sync, so check the row rendering instead of the transient status line.)
+    // Both edit the same memo to different values.
     await a.sendKey("m");
     await a.waitFor((s) => s.includes("MEMO-FORM"));
     await a.sendText("tx-shared alice-memo");
     await a.sendKey("Enter");
     await a.waitFor((s) => s.includes(`memo=${JSON.stringify("alice-memo")}`));
-
     await b.sendKey("m");
     await b.waitFor((s) => s.includes("MEMO-FORM"));
     await b.sendText("tx-shared bob-memo");
     await b.sendKey("Enter");
     await b.waitFor((s) => s.includes(`memo=${JSON.stringify("bob-memo")}`));
 
-    // Master picks alice first (alphabetical); bob then conflicts.
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await m.waitFor((s) => s.includes(`memo=${JSON.stringify("alice-memo")}`), {
-      label: "master applied alice's memo",
+      label: "master picked alice's memo",
       timeoutMs: 15000,
     });
+    await syncerSync([masterRoot, aliceRoot, bobRoot]);
     await b.waitFor((s) => s.includes("CONFLICT kind=non_commutative"), {
-      label: "bob in non-commutative conflict",
+      label: "bob's rebase hit non-commutative",
       timeoutMs: 15000,
     });
     await b.sendKey("d");

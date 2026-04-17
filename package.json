@@ -30,8 +30,8 @@
     "vitest": "^3.0.0"
   },
   "bin": {
-    "sql-git-demo": "demo/cli.tsx",
-    "sql-git-sync": "demo/sync.ts"
+    "tracker": "demo/tracker.tsx",
+    "syncer": "demo/syncer.ts"
   },
   "packageManager": "pnpm@10.33.0",
   "pnpm": {

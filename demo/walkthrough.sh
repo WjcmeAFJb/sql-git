@@ -1,19 +1,30 @@
 #!/usr/bin/env bash
-# Manual walkthrough of the TUI + syncer: simulates a "day in the life" of
-# two devices (master / alice) sharing a money tracker via Syncthing.
-# Each STEP prints the three panes so you can see the cluster converge.
+# Manual walkthrough of tracker + syncer: simulates a "day in the life" of
+# two devices (desktop / phone) sharing a money tracker. Each STEP prints
+# the three panes so you can see the cluster converge.
+#
+# Uses only two CLI commands:
+#   syncer create-host <path> [--master <id>]
+#   syncer sync <path> <path> …
+#   tracker <path> --peer-id <id>
 set -euo pipefail
 
 ROOT=${ROOT:-/tmp/sqlgit-walk}
 rm -rf "$ROOT"
-mkdir -p "$ROOT/master" "$ROOT/alice"
+mkdir -p "$ROOT"
 cd "$(dirname "$0")/.."
 
-# Seed master before any TUI opens.
+SYNCER=(./node_modules/.bin/tsx ./demo/syncer.ts)
+TRACKER=(./node_modules/.bin/tsx ./demo/tracker.tsx)
+
+"${SYNCER[@]}" create-host "$ROOT/desktop" --master desktop
+"${SYNCER[@]}" create-host "$ROOT/phone"   --master desktop
+
+# Seed desktop (which IS the master) before any TUI opens.
 node --experimental-strip-types - <<EOF
 import { Store } from "./src/index.ts";
 import { bankActions } from "./demo/actions.ts";
-const s = Store.open({ root: "$ROOT/master", peerId: "master", masterId: "master", actions: bankActions });
+const s = Store.open({ root: "$ROOT/desktop", peerId: "desktop", masterId: "desktop", actions: bankActions });
 s.submit("init_bank", {});
 s.submit("open_account", { id: "checking", initial: 100 });
 s.submit("open_account", { id: "savings", initial: 200 });
@@ -22,29 +33,27 @@ await s.sync();
 s.close();
 EOF
 
+# Push the seeded state to phone so her initial open sees it.
+"${SYNCER[@]}" sync "$ROOT/desktop" "$ROOT/phone"
+
 S=walk-$$
 tmux kill-session -t "$S" 2>/dev/null || true
-tmux new-session -d -s "$S" -x 180 -y 36
-tmux rename-window -t "$S:0" master
-tmux send-keys -t "$S:0" "./node_modules/.bin/tsx demo/cli.tsx --root $ROOT/master --peer master --master master --watch-debounce 150" Enter
+tmux new-session -d -s "$S" -x 180 -y 36 -n desktop
+tmux send-keys -t "$S:desktop" "${TRACKER[*]} $ROOT/desktop --peer-id desktop --watch-debounce 150" Enter
 
-tmux new-window  -t "$S" -n alice
-tmux send-keys -t "$S:alice" "./node_modules/.bin/tsx demo/cli.tsx --root $ROOT/alice  --peer alice  --master master --watch-debounce 150" Enter
-
-tmux new-window  -t "$S" -n syncer
-tmux send-keys -t "$S:syncer" "./node_modules/.bin/tsx demo/sync.ts watch --host master=$ROOT/master --host alice=$ROOT/alice --master master --debounce 100 -v" Enter
+tmux new-window -t "$S" -n phone
+tmux send-keys -t "$S:phone" "${TRACKER[*]} $ROOT/phone --peer-id phone --watch-debounce 150" Enter
 
 sleep 2
 
 banner() { printf "\n=================================  %s  =================================\n" "$1"; }
 show() {
   banner "$1"
-  echo "---- master ----"; tmux capture-pane -t "$S:master" -p | sed -n '1,20p'
-  echo "---- alice  ----"; tmux capture-pane -t "$S:alice"  -p | sed -n '1,20p'
-  echo "---- syncer ----"; tmux capture-pane -t "$S:syncer" -p | sed -n '1,10p'
+  echo "---- desktop ----"; tmux capture-pane -t "$S:desktop" -p | sed -n '1,20p'
+  echo "---- phone   ----"; tmux capture-pane -t "$S:phone"   -p | sed -n '1,20p'
 }
+sync() { "${SYNCER[@]}" sync "$ROOT/desktop" "$ROOT/phone" >/dev/null; }
 wait_for() {
-  # wait_for window needle max-seconds
   local w=$1 needle=$2 max=${3:-15}
   local start=$SECONDS
   while :; do
@@ -53,89 +62,94 @@ wait_for() {
     sleep 0.2
   done
 }
-type_in() {  # window, text
-  tmux send-keys -t "$S:$1" -l "$2"
-  tmux send-keys -t "$S:$1" Enter
-}
+type_in() { tmux send-keys -t "$S:$1" -l "$2"; tmux send-keys -t "$S:$1" Enter; }
 
-# --- STEP 1: alice catches up ------------------------------------------------
-wait_for alice "ACCT checking 100" 15
-show "STEP 1 — alice catches up via syncer on startup"
+# --- STEP 1: phone catches up via syncer sync ---------------------------------
+wait_for phone "ACCT checking 100" 15
+show "STEP 1 — phone caught up from desktop via 'syncer sync' (ran once before TUIs launched)"
 
-# --- STEP 2: alice makes a non-conflicting transfer --------------------------
-tmux send-keys -t "$S:alice" t
-wait_for alice "TRANSFER-FORM" 5
-type_in alice "coffee-1 checking external 5"
-wait_for master "TX coffee-1"    15
-wait_for alice  "TX coffee-1"    15
-show "STEP 2 — alice's 5-unit transfer propagated & incorporated"
+# --- STEP 2: phone makes a non-conflicting transfer --------------------------
+tmux send-keys -t "$S:phone" t
+wait_for phone "TRANSFER-FORM" 5
+type_in phone "coffee-1 checking external 5"
+sync
+wait_for desktop "TX coffee-1" 15
+sync
+wait_for phone "TX coffee-1" 15
+show "STEP 2 — phone's 5-unit transfer synced and incorporated by desktop"
 
-# --- STEP 3: master's own transfer converges on alice ------------------------
-tmux send-keys -t "$S:master" t
-wait_for master "TRANSFER-FORM" 5
-type_in master "rent-1 checking external 20"
-wait_for master "TX rent-1" 15
-wait_for alice  "TX rent-1" 15
-show "STEP 3 — master submitted its own transfer; alice catches up"
+# --- STEP 3: desktop's own transfer converges on phone -----------------------
+tmux send-keys -t "$S:desktop" t
+wait_for desktop "TRANSFER-FORM" 5
+type_in desktop "rent-1 checking external 20"
+sync
+wait_for phone "TX rent-1" 15
+show "STEP 3 — desktop's own transfer reached phone after one sync"
 
-# --- STEP 4: commuting edits (alice memo + master category on same tx) ------
-tmux send-keys -t "$S:alice" m
-wait_for alice "MEMO-FORM" 5
-type_in alice 'coffee-1 morning-latte'
-tmux send-keys -t "$S:master" c
-wait_for master "CATEGORY-FORM" 5
-type_in master "coffee-1 food"
-wait_for master 'memo="morning-latte".*cat=food\|cat=food.*memo="morning-latte"' 20
-wait_for alice  'memo="morning-latte".*cat=food\|cat=food.*memo="morning-latte"' 20
+# --- STEP 4: commuting edits (phone memo + desktop category on same tx) ------
+tmux send-keys -t "$S:phone" m
+wait_for phone "MEMO-FORM" 5
+type_in phone 'coffee-1 morning-latte'
+tmux send-keys -t "$S:desktop" c
+wait_for desktop "CATEGORY-FORM" 5
+type_in desktop "coffee-1 food"
+sync
+wait_for desktop 'memo="morning-latte"' 15
+wait_for desktop 'cat=food' 15
+sync
+wait_for phone 'memo="morning-latte".*cat=food\|cat=food.*memo="morning-latte"' 15
 show "STEP 4 — different-field edits on same tx commute and both land"
 
-# --- STEP 5: same-field conflict, alice drops -------------------------------
-tmux send-keys -t "$S:alice" m
-wait_for alice "MEMO-FORM" 5
-type_in alice 'rent-1 alice-note'
-tmux send-keys -t "$S:master" m
-wait_for master "MEMO-FORM" 5
-type_in master 'rent-1 master-note'
-# Master will apply its own update locally; alice's sync will hit conflict vs master's note.
-wait_for master 'memo="master-note"' 15
-wait_for alice  'CONFLICT kind=non_commutative' 15
-tmux send-keys -t "$S:alice" d
-wait_for alice  'memo="master-note"' 15
-show "STEP 5 — alice tried a conflicting memo edit; dropped → master's wins"
+# --- STEP 5: same-field conflict, phone drops --------------------------------
+tmux send-keys -t "$S:phone" m
+wait_for phone "MEMO-FORM" 5
+type_in phone 'rent-1 phone-note'
+tmux send-keys -t "$S:desktop" m
+wait_for desktop "MEMO-FORM" 5
+type_in desktop 'rent-1 desktop-note'
+sync
+wait_for desktop 'memo="desktop-note"' 15
+sync
+wait_for phone 'CONFLICT kind=non_commutative' 15
+tmux send-keys -t "$S:phone" d
+wait_for phone 'memo="desktop-note"' 15
+show "STEP 5 — phone's conflicting memo dropped; desktop's wins"
 
-# --- STEP 6: overdraft with retry+topup -------------------------------------
-# Current balances (one way to read: from master screen): after steps so far.
-# Let the user overdraw. Alice opens a transfer that drains checking past 0;
-# master concurrently takes a chunk; alice resolves with a retry topup.
-tmux send-keys -t "$S:master" t
-wait_for master "TRANSFER-FORM" 5
-type_in master "gas-1 checking external 60"
-tmux send-keys -t "$S:alice" t
-wait_for alice "TRANSFER-FORM" 5
-type_in alice  "uber-1 checking external 50"
-wait_for master "TX gas-1" 15
-wait_for alice  "CONFLICT kind=error" 20
-tmux send-keys -t "$S:alice" r
-wait_for alice "RETRY-FORM" 5
-type_in alice  "alice-topup savings checking 60"
-wait_for alice "TX alice-topup" 20
-wait_for master "TX alice-topup" 20
-wait_for master "TX uber-1" 20
-show "STEP 6 — alice's transfer would overdraft; retried with topup from savings"
+# --- STEP 6: overdraft with retry+topup --------------------------------------
+tmux send-keys -t "$S:desktop" t
+wait_for desktop "TRANSFER-FORM" 5
+type_in desktop "gas-1 checking external 60"
+tmux send-keys -t "$S:phone" t
+wait_for phone "TRANSFER-FORM" 5
+type_in phone  "uber-1 checking external 50"
+sync
+wait_for desktop "TX gas-1" 15
+sync
+wait_for phone "CONFLICT kind=error" 20
+tmux send-keys -t "$S:phone" r
+wait_for phone "RETRY-FORM" 5
+type_in phone  "phone-topup savings checking 60"
+wait_for phone "TX phone-topup" 20
+sync
+wait_for desktop "TX phone-topup" 20
+wait_for desktop "TX uber-1" 20
+show "STEP 6 — phone's transfer would overdraft; retried with topup from savings"
 
-# --- STEP 7: force a same-field memo conflict -------------------------------
-tmux send-keys -t "$S:alice" m
-wait_for alice "MEMO-FORM" 5
-type_in alice "rent-1 alice-insists"
-tmux send-keys -t "$S:master" m
-wait_for master "MEMO-FORM" 5
-type_in master "rent-1 master-insists"
-wait_for alice 'CONFLICT kind=non_commutative' 15
-tmux send-keys -t "$S:alice" f     # alice forces
-wait_for alice  'memo="alice-insists"' 15
-wait_for master 'memo="alice-insists"' 15
-show "STEP 7 — alice forces her memo; master's stale conflicting edit is superseded"
+# --- STEP 7: force a same-field memo conflict --------------------------------
+tmux send-keys -t "$S:phone" m
+wait_for phone "MEMO-FORM" 5
+type_in phone "rent-1 phone-insists"
+tmux send-keys -t "$S:desktop" m
+wait_for desktop "MEMO-FORM" 5
+type_in desktop "rent-1 desktop-insists"
+sync
+wait_for phone 'CONFLICT kind=non_commutative' 15
+tmux send-keys -t "$S:phone" f
+wait_for phone  'memo="phone-insists"' 15
+sync
+wait_for desktop 'memo="phone-insists"' 15
+show "STEP 7 — phone forces her memo; desktop's stale edit is superseded"
 
 echo
-echo "Walkthrough session: tmux attach -t $S"
-echo "(Leave running so you can inspect the panes; Ctrl-B D detaches.)"
+echo "Session: tmux attach -t $S    (Ctrl-B D to detach)"
+echo "To tear down: tmux kill-session -t $S  &&  rm -rf $ROOT"
