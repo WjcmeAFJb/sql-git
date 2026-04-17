@@ -579,7 +579,19 @@ export function App({
       depth: 3,
       awaitWriteFinish: { stabilityThreshold: 30, pollInterval: 20 },
     });
-    const onChange = () => {
+    const ownLogSuffix = `peers/${peerId}.jsonl`;
+    const isOwnWrite = (path: string): boolean => {
+      // Our own peer log — written by every sync — would otherwise retrigger
+      // sync forever (self-feedback loop; visible as a flickering mode line).
+      if (path.endsWith(ownLogSuffix)) return true;
+      // Master also owns snapshot.db.
+      if (store.isMaster && path.endsWith("/snapshot.db")) return true;
+      // Ignore the atomic-rename scratch files from syncer and rewriteLog.
+      if (path.endsWith(".tmp") || path.endsWith(".tmp-syncer")) return true;
+      return false;
+    };
+    const onChange = (_evt: string, path: string) => {
+      if (isOwnWrite(path)) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         if (modeRef.current === "idle" || modeRef.current === "syncing") void doSync();
@@ -590,7 +602,7 @@ export function App({
       void watcher.close();
       if (timer) clearTimeout(timer);
     };
-  }, [store, root, doSync, watchDebounceMs, noWatch]);
+  }, [store, root, peerId, doSync, watchDebounceMs, noWatch]);
 
   // ─── data queries (computed each render) ──────────────────────────────
   const tablesExist = store
