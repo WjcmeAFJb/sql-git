@@ -71,9 +71,13 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
     .filter((e): e is MasterActionEntry => e.kind === "action")
     .sort((a, b) => a.seq - b.seq);
 
-  const ownActions = store.peerLog
-    .filter((e): e is PeerActionEntry => e.kind === "action")
-    .sort((a, b) => a.seq - b.seq);
+  // Process in log/file order, NOT seq order. A `retry` resolution writes the
+  // prepended action (new high seq) before the retried original (its old
+  // lower seq), so `sort by seq` would reorder them and apply the original
+  // before its topup — triggering the very error the retry was meant to fix.
+  const ownActions = store.peerLog.filter(
+    (e): e is PeerActionEntry => e.kind === "action",
+  );
 
   const kept: PeerActionEntry[] = [];
 

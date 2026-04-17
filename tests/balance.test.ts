@@ -259,6 +259,93 @@ describe("balance constraint with auto-balancing trigger", () => {
     bob.close();
   });
 
+  it("reopened log after retry replays in log order (not seq order) — regression", async () => {
+    // Regression from the TUI walkthrough: after `retry`, the kept log order
+    // is [prepend (high seq), original (low seq)]. If peer-sync processed
+    // ownActions by seq instead of log order, it would replay the original
+    // *before* its topup on reopen/re-sync and re-trip the very CHECK that
+    // the retry just fixed.
+    //
+    // Reproduction uses two hosts so master's drain doesn't reach alice
+    // before she submits her conflicting transfer.
+    const { mkdirSync, copyFileSync, existsSync } = await import("node:fs");
+    const { peerLogPath, snapshotPath, peersDir } = await import("../src/paths.ts");
+    const masterRoot = makeRoot();
+    const aliceRoot = makeRoot();
+    mkdirSync(peersDir(aliceRoot), { recursive: true });
+
+    const master = Store.open({ root: masterRoot, peerId: "master", masterId: "master", actions: bankActions });
+    master.submit("init_bank", {});
+    master.submit("open_account", { id: "checking", initial: 100 });
+    master.submit("open_account", { id: "savings", initial: 200 });
+    master.submit("open_account", { id: "external", initial: 0 });
+    await master.sync();
+
+    // "Syncthing" propagates master's files to alice before she opens.
+    copyFileSync(peerLogPath(masterRoot, "master"), peerLogPath(aliceRoot, "master"));
+    if (existsSync(snapshotPath(masterRoot))) {
+      copyFileSync(snapshotPath(masterRoot), snapshotPath(aliceRoot));
+    }
+
+    const alice = Store.open({ root: aliceRoot, peerId: "alice", masterId: "master", actions: bankActions });
+    alice.submit("transfer", {
+      txId: "alice-splurge",
+      from: "checking",
+      to: "external",
+      amount: 50,
+      ts: "t",
+    });
+    alice.close();
+
+    // Master then drains checking, BEFORE alice's log reaches master and
+    // before master's log reaches alice's host — exactly the window the TUI
+    // walkthrough exposed.
+    master.submit("transfer", {
+      txId: "master-drain",
+      from: "checking",
+      to: "external",
+      amount: 85,
+      ts: "t",
+    });
+    await master.sync();
+    copyFileSync(peerLogPath(masterRoot, "master"), peerLogPath(aliceRoot, "master"));
+
+    // Alice reopens, sees master's drain via her log, tries to rebase her
+    // pending transfer. Resolver tops up via savings and retries.
+    const alice2 = Store.open({ root: aliceRoot, peerId: "alice", masterId: "master", actions: bankActions });
+    await alice2.sync({
+      onConflict: (ctx) => {
+        ctx.submit("transfer", {
+          txId: "alice-topup",
+          from: "savings",
+          to: "checking",
+          amount: 80,
+          ts: "t",
+        });
+        return "retry";
+      },
+    });
+    alice2.close();
+
+    // Another reopen re-derives db from the rewritten log. Log order now has
+    // topup (seq 2) before the retried original (seq 1). Calling sync again
+    // while master's log has NOT yet been updated with alice's entries
+    // exercises the bug: seq-order processing would replay the forced
+    // original on state_at(master-drain) before applying the topup and trip
+    // CHECK (balance >= 0).
+    const alice3 = Store.open({ root: aliceRoot, peerId: "alice", masterId: "master", actions: bankActions });
+    await alice3.sync({ onConflict: () => "drop" });
+    const bal = (
+      alice3.db.prepare("SELECT balance FROM accounts WHERE id = 'checking'").get() as {
+        balance: number;
+      }
+    ).balance;
+    expect(bal).toBeGreaterThanOrEqual(0);
+    alice3.close();
+
+    master.close();
+  });
+
   it("retry preserves prepended actions even if resolver then chooses to drop the original", async () => {
     const root = makeRoot();
     const master = Store.open({ root, peerId: "master", masterId: "master", actions: bankActions });
