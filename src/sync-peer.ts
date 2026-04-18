@@ -142,14 +142,14 @@ function rowsetMatches(a: Db, b: Db, rowKeys: Set<string>): boolean {
   return true;
 }
 
-function buildMasterState(
+async function buildMasterState(
   masterLog: MasterLogEntry[],
   snapshotFile: string,
   targetSeq: number,
   actions: Store["actions"],
   alsoIncludeSamePeer?: string,
-): { db: Db; masterHead: number; snapshotHead: number } {
-  const db = loadSnapshotToMemory(snapshotFile);
+): Promise<{ db: Db; masterHead: number; snapshotHead: number }> {
+  const db = await loadSnapshotToMemory(snapshotFile);
   const snapshotHead = getSnapshotHead(db);
   const masterActions = masterLog
     .filter((e): e is MasterActionEntry => e.kind === "action")
@@ -170,14 +170,14 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
   const report: SyncReport = { applied: 0, skipped: 0, dropped: 0, forced: 0 };
   const resolver = opts.onConflict;
 
-  const masterLog: MasterLogEntry[] = readLog(peerLogPath(store.root, store.masterId));
+  const masterLog: MasterLogEntry[] = await readLog(peerLogPath(store.root, store.masterId));
 
   let newMasterHead = 0;
   for (const e of masterLog) {
     if (e.kind === "action" && e.seq > newMasterHead) newMasterHead = e.seq;
   }
-  const snapHead = (() => {
-    const s = loadSnapshotToMemory(snapshotPath(store.root));
+  const snapHead = await (async () => {
+    const s = await loadSnapshotToMemory(snapshotPath(store.root));
     const h = getSnapshotHead(s);
     s.close();
     return h;
@@ -192,7 +192,7 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
     }
   }
 
-  const rebased = buildMasterState(masterLog, snapshotPath(store.root), newMasterHead, store.actions);
+  const rebased = await buildMasterState(masterLog, snapshotPath(store.root), newMasterHead, store.actions);
   const rebasedDb = rebased.db;
 
   const masterActions = masterLog
@@ -229,7 +229,7 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
     for (const a of unincorporated) {
       if (a.baseMasterSeq < firstBase) firstBase = a.baseMasterSeq;
     }
-    const probeBuild = buildMasterState(
+    const probeBuild = await buildMasterState(
       masterLog,
       snapshotPath(store.root),
       firstBase,
@@ -248,7 +248,7 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
       probeBuild.db.close();
       const newLog: PeerLogEntry[] = [{ kind: "master_ack", masterSeq: newMasterHead }];
       store.peerLog = newLog;
-      rewriteLog(peerLogPath(store.root, store.peerId), newLog);
+      await rewriteLog(peerLogPath(store.root, store.peerId), newLog);
       const old = store.db;
       store.db = rebasedDb;
       store.currentMasterSeq = newMasterHead;
@@ -264,7 +264,7 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
 
     // Chain-based: trace each action's writes, group by overlap, absorb
     // convergent chains. Remaining fall through to the per-action loop.
-    const chainBaseBuild = buildMasterState(
+    const chainBaseBuild = await buildMasterState(
       masterLog,
       snapshotPath(store.root),
       firstBase,
@@ -305,12 +305,14 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
       } else {
         // baseDb needs to reflect state_at(base) PLUS this peer's own prior
         // incorporations, so the current action sees its intended context.
-        baseDb = buildMasterState(
-          masterLog,
-          snapshotPath(store.root),
-          action.baseMasterSeq,
-          store.actions,
-          store.peerId,
+        baseDb = (
+          await buildMasterState(
+            masterLog,
+            snapshotPath(store.root),
+            action.baseMasterSeq,
+            store.actions,
+            store.peerId,
+          )
         ).db;
       }
 
@@ -442,7 +444,7 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
 
   const newLog: PeerLogEntry[] = [...kept, { kind: "master_ack", masterSeq: newMasterHead }];
   store.peerLog = newLog;
-  rewriteLog(peerLogPath(store.root, store.peerId), newLog);
+  await rewriteLog(peerLogPath(store.root, store.peerId), newLog);
 
   const old = store.db;
   store.db = rebasedDb;

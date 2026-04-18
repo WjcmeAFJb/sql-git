@@ -8,7 +8,7 @@ import type {
   SqlValue,
   WriteLogEntry,
 } from "sqlite3-read-tracking";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { fs } from "./fs.ts";
 
 export type Param = string | number | boolean | bigint | Uint8Array | null | undefined;
 export type { ReadLogEntry, WriteLogEntry, PredicateLogEntry, IndexWriteLogEntry, SqlValue };
@@ -27,10 +27,32 @@ export const META_TABLE = "__sqlgit_meta__";
 let SQL_PROMISE: Promise<SqliteTracked> | null = null;
 let SQL_CACHED: SqliteTracked | null = null;
 let sqlite3_changes_fn: ((ptr: number) => number) | null = null;
+let SQL_INIT_CONFIG: SqliteInitConfig = {};
+
+/**
+ * Options forwarded to the underlying `sqlite3-read-tracking` WASM module
+ * factory. In Node the defaults work because emscripten can locate the
+ * `.wasm` next to the `.js` file on disk; in the browser the caller must
+ * supply either `locateFile` (to point at a bundler-resolved URL) or
+ * `wasmBinary` (to hand over the bytes directly).
+ */
+export interface SqliteInitConfig {
+  locateFile?: (name: string) => string;
+  wasmBinary?: ArrayBuffer | Uint8Array;
+}
+
+/** Install options for the next {@link initSql} call. A no-op after
+ *  initialisation has completed. */
+export function setSqliteInitConfig(cfg: SqliteInitConfig): void {
+  SQL_INIT_CONFIG = { ...cfg };
+}
 
 export async function initSql(): Promise<SqliteTracked> {
   if (SQL_CACHED) return SQL_CACHED;
-  if (!SQL_PROMISE) SQL_PROMISE = initSqliteTracked();
+  if (!SQL_PROMISE) {
+    const arg = { ...SQL_INIT_CONFIG } as Parameters<typeof initSqliteTracked>[0];
+    SQL_PROMISE = initSqliteTracked(arg);
+  }
   const mod = await SQL_PROMISE;
   SQL_CACHED = mod;
   const cwrap = (mod as unknown as { cwrap: (name: string, ret: string, args: string[]) => (...a: number[]) => number }).cwrap;
@@ -185,9 +207,11 @@ function rowToObject(columns: string[], values: SqlValue[]): Record<string, SqlV
   return out;
 }
 
-export function openDb(path: string): Db {
+export async function openDb(p: string): Promise<Db> {
   const SQL = sqlSync();
-  const raw = existsSync(path) ? deserializeRaw(SQL, readFileSync(path)) : new SQL.Database();
+  const raw = (await fs.exists(p))
+    ? deserializeRaw(SQL, await fs.readFile(p))
+    : new SQL.Database();
   raw.exec("PRAGMA foreign_keys = ON");
   const db = new Db(raw);
   initMeta(db);
@@ -211,12 +235,12 @@ export function cloneDb(db: Db): Db {
   return new Db(raw);
 }
 
-export function copyDbFile(src: string, dest: string): void {
-  if (!existsSync(src)) return;
-  const bytes = readFileSync(src);
+export async function copyDbFile(src: string, dest: string): Promise<void> {
+  if (!(await fs.exists(src))) return;
+  const bytes = await fs.readFile(src);
   const tmp = dest + ".tmp";
-  writeFileSync(tmp, bytes);
-  renameSync(tmp, dest);
+  await fs.writeFile(tmp, bytes);
+  await fs.rename(tmp, dest);
 }
 
 /** Load a JSON-dumped snapshot into a fresh in-memory Db. FKs are ON. */

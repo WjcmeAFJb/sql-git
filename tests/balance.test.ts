@@ -68,18 +68,18 @@ describe("balance constraint with auto-balancing trigger", () => {
   it("alice and bob each overdraw when combined — bob drops his action", async () => {
     const root = makeRoot();
     const master = await Store.open({ root, peerId: "master", masterId: "master", actions: bankActions });
-    master.submit("init_bank", {});
-    master.submit("open_account", { id: "checking", initial: 100 });
-    master.submit("open_account", { id: "savings", initial: 200 });
-    master.submit("open_account", { id: "external", initial: 0 });
+    await master.submit("init_bank", {});
+    await master.submit("open_account", { id: "checking", initial: 100 });
+    await master.submit("open_account", { id: "savings", initial: 200 });
+    await master.submit("open_account", { id: "external", initial: 0 });
     await master.sync();
 
     const alice = await Store.open({ root, peerId: "alice", masterId: "master", actions: bankActions });
     const bob = await Store.open({ root, peerId: "bob", masterId: "master", actions: bankActions });
 
     // Individually valid for each peer's local view (checking=100).
-    alice.submit("transfer", { txId: "alice-1", from: "checking", to: "external", amount: 60 });
-    bob.submit("transfer", { txId: "bob-1", from: "checking", to: "external", amount: 50 });
+    await alice.submit("transfer", { txId: "alice-1", from: "checking", to: "external", amount: 60 });
+    await bob.submit("transfer", { txId: "bob-1", from: "checking", to: "external", amount: 50 });
 
     // Alice wins alphabetically. Bob's transfer then errors on current master state
     // (balance CHECK would fail: 40 - 50 = -10), so master stops processing bob.
@@ -119,17 +119,17 @@ describe("balance constraint with auto-balancing trigger", () => {
   it("bob tops up from savings during resolution and retries the original transfer", async () => {
     const root = makeRoot();
     const master = await Store.open({ root, peerId: "master", masterId: "master", actions: bankActions });
-    master.submit("init_bank", {});
-    master.submit("open_account", { id: "checking", initial: 100 });
-    master.submit("open_account", { id: "savings", initial: 200 });
-    master.submit("open_account", { id: "external", initial: 0 });
+    await master.submit("init_bank", {});
+    await master.submit("open_account", { id: "checking", initial: 100 });
+    await master.submit("open_account", { id: "savings", initial: 200 });
+    await master.submit("open_account", { id: "external", initial: 0 });
     await master.sync();
 
     const alice = await Store.open({ root, peerId: "alice", masterId: "master", actions: bankActions });
     const bob = await Store.open({ root, peerId: "bob", masterId: "master", actions: bankActions });
 
-    alice.submit("transfer", { txId: "alice-1", from: "checking", to: "external", amount: 60 });
-    bob.submit("transfer", { txId: "bob-1", from: "checking", to: "external", amount: 50 });
+    await alice.submit("transfer", { txId: "alice-1", from: "checking", to: "external", amount: 60 });
+    await bob.submit("transfer", { txId: "bob-1", from: "checking", to: "external", amount: 50 });
 
     await master.sync(); // alice incorporated; bob errors and stalls
 
@@ -182,10 +182,10 @@ describe("balance constraint with auto-balancing trigger", () => {
   it("three-peer overdraft: two peers must each resolve differently (one drops, one tops up)", async () => {
     const root = makeRoot();
     const master = await Store.open({ root, peerId: "master", masterId: "master", actions: bankActions });
-    master.submit("init_bank", {});
-    master.submit("open_account", { id: "checking", initial: 100 });
-    master.submit("open_account", { id: "savings", initial: 200 });
-    master.submit("open_account", { id: "external", initial: 0 });
+    await master.submit("init_bank", {});
+    await master.submit("open_account", { id: "checking", initial: 100 });
+    await master.submit("open_account", { id: "savings", initial: 200 });
+    await master.submit("open_account", { id: "external", initial: 0 });
     await master.sync();
 
     const alice = await Store.open({ root, peerId: "alice", masterId: "master", actions: bankActions });
@@ -193,9 +193,9 @@ describe("balance constraint with auto-balancing trigger", () => {
     const carol = await Store.open({ root, peerId: "carol", masterId: "master", actions: bankActions });
 
     // Each individually OK (80/60/70 on 100 balance). Any two combined overdraft.
-    alice.submit("transfer", { txId: "alice-1", from: "checking", to: "external", amount: 80 });
-    bob.submit("transfer", { txId: "bob-1", from: "checking", to: "external", amount: 60 });
-    carol.submit("transfer", { txId: "carol-1", from: "checking", to: "external", amount: 70 });
+    await alice.submit("transfer", { txId: "alice-1", from: "checking", to: "external", amount: 80 });
+    await bob.submit("transfer", { txId: "bob-1", from: "checking", to: "external", amount: 60 });
+    await carol.submit("transfer", { txId: "carol-1", from: "checking", to: "external", amount: 70 });
 
     // Master processes alphabetically: alice applies (checking=20), bob errors (20-60<0),
     // carol errors (20-70<0). Both bob and carol stall.
@@ -237,16 +237,16 @@ describe("balance constraint with auto-balancing trigger", () => {
   it("'retry' without any ctx.submit(...) throws to prevent infinite loops", async () => {
     const root = makeRoot();
     const master = await Store.open({ root, peerId: "master", masterId: "master", actions: bankActions });
-    master.submit("init_bank", {});
-    master.submit("open_account", { id: "checking", initial: 100 });
-    master.submit("open_account", { id: "external", initial: 0 });
+    await master.submit("init_bank", {});
+    await master.submit("open_account", { id: "checking", initial: 100 });
+    await master.submit("open_account", { id: "external", initial: 0 });
     await master.sync();
 
     const alice = await Store.open({ root, peerId: "alice", masterId: "master", actions: bankActions });
     const bob = await Store.open({ root, peerId: "bob", masterId: "master", actions: bankActions });
 
-    alice.submit("transfer", { txId: "alice-1", from: "checking", to: "external", amount: 60 });
-    bob.submit("transfer", { txId: "bob-1", from: "checking", to: "external", amount: 50 });
+    await alice.submit("transfer", { txId: "alice-1", from: "checking", to: "external", amount: 60 });
+    await bob.submit("transfer", { txId: "bob-1", from: "checking", to: "external", amount: 50 });
     await master.sync();
 
     await expect(
@@ -274,10 +274,10 @@ describe("balance constraint with auto-balancing trigger", () => {
     mkdirSync(peersDir(aliceRoot), { recursive: true });
 
     const master = await Store.open({ root: masterRoot, peerId: "master", masterId: "master", actions: bankActions });
-    master.submit("init_bank", {});
-    master.submit("open_account", { id: "checking", initial: 100 });
-    master.submit("open_account", { id: "savings", initial: 200 });
-    master.submit("open_account", { id: "external", initial: 0 });
+    await master.submit("init_bank", {});
+    await master.submit("open_account", { id: "checking", initial: 100 });
+    await master.submit("open_account", { id: "savings", initial: 200 });
+    await master.submit("open_account", { id: "external", initial: 0 });
     await master.sync();
 
     // "Syncthing" propagates master's files to alice before she opens.
@@ -287,7 +287,7 @@ describe("balance constraint with auto-balancing trigger", () => {
     }
 
     const alice = await Store.open({ root: aliceRoot, peerId: "alice", masterId: "master", actions: bankActions });
-    alice.submit("transfer", {
+    await alice.submit("transfer", {
       txId: "alice-splurge",
       from: "checking",
       to: "external",
@@ -299,7 +299,7 @@ describe("balance constraint with auto-balancing trigger", () => {
     // Master then drains checking, BEFORE alice's log reaches master and
     // before master's log reaches alice's host — exactly the window the TUI
     // walkthrough exposed.
-    master.submit("transfer", {
+    await master.submit("transfer", {
       txId: "master-drain",
       from: "checking",
       to: "external",
@@ -348,17 +348,17 @@ describe("balance constraint with auto-balancing trigger", () => {
   it("retry preserves prepended actions even if resolver then chooses to drop the original", async () => {
     const root = makeRoot();
     const master = await Store.open({ root, peerId: "master", masterId: "master", actions: bankActions });
-    master.submit("init_bank", {});
-    master.submit("open_account", { id: "checking", initial: 100 });
-    master.submit("open_account", { id: "savings", initial: 200 });
-    master.submit("open_account", { id: "external", initial: 0 });
+    await master.submit("init_bank", {});
+    await master.submit("open_account", { id: "checking", initial: 100 });
+    await master.submit("open_account", { id: "savings", initial: 200 });
+    await master.submit("open_account", { id: "external", initial: 0 });
     await master.sync();
 
     const alice = await Store.open({ root, peerId: "alice", masterId: "master", actions: bankActions });
     const bob = await Store.open({ root, peerId: "bob", masterId: "master", actions: bankActions });
 
-    alice.submit("transfer", { txId: "alice-1", from: "checking", to: "external", amount: 60 });
-    bob.submit("transfer", { txId: "bob-1", from: "checking", to: "external", amount: 50 });
+    await alice.submit("transfer", { txId: "alice-1", from: "checking", to: "external", amount: 60 });
+    await bob.submit("transfer", { txId: "bob-1", from: "checking", to: "external", amount: 50 });
     await master.sync();
 
     // Bob topups but then decides to drop the original anyway. The topup should persist.
@@ -398,9 +398,9 @@ describe("balance constraint with auto-balancing trigger", () => {
       masterId: "master",
       actions: bankActions,
     });
-    master.submit("init_bank", {});
-    master.submit("create_account", { id: "checking", name: "Checking", ts: "t" });
-    master.submit("create_income", {
+    await master.submit("init_bank", {});
+    await master.submit("create_account", { id: "checking", name: "Checking", ts: "t" });
+    await master.submit("create_income", {
       id: "salary",
       acc_to: "checking",
       amount: 100,
@@ -408,7 +408,7 @@ describe("balance constraint with auto-balancing trigger", () => {
       memo: "pay",
       ts: "t",
     });
-    master.submit("create_expense", {
+    await master.submit("create_expense", {
       id: "rent",
       acc_from: "checking",
       amount: 80,
@@ -417,7 +417,7 @@ describe("balance constraint with auto-balancing trigger", () => {
       ts: "t",
     });
     // balance(checking) = 100 - 80 = 20 < OLD salary amount (100).
-    master.submit("edit_tx_amount", { id: "salary", amount: 80 });
+    await master.submit("edit_tx_amount", { id: "salary", amount: 80 });
     // Old trigger would have tripped: step 1 = balance - 100 = -80 → CHECK.
     // New trigger: balance += NEW - OLD = 80 - 100 = -20 → balance = 0. ✓
     const bal = (

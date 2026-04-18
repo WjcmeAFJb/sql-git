@@ -29,12 +29,12 @@ async function seedMaster(root: string): Promise<void> {
   const { bankActions } = await import("../demo/actions.ts");
   const s = await mod.Store.open({ root, peerId: "master", masterId: "master", actions: bankActions });
   try {
-    s.submit("init_bank", {});
-    s.submit("create_account", { id: "checking", name: "Checking", ts: "1970-01-01T00:00:00.000Z" });
-    s.submit("create_account", { id: "savings", name: "Savings", ts: "1970-01-01T00:00:00.000Z" });
-    s.submit("create_category", { id: "food", name: "Food", kind: "expense", ts: "1970-01-01T00:00:00.000Z" });
-    s.submit("create_category", { id: "rent", name: "Rent", kind: "expense", ts: "1970-01-01T00:00:00.000Z" });
-    s.submit("create_income", {
+    await s.submit("init_bank", {});
+    await s.submit("create_account", { id: "checking", name: "Checking", ts: "1970-01-01T00:00:00.000Z" });
+    await s.submit("create_account", { id: "savings", name: "Savings", ts: "1970-01-01T00:00:00.000Z" });
+    await s.submit("create_category", { id: "food", name: "Food", kind: "expense", ts: "1970-01-01T00:00:00.000Z" });
+    await s.submit("create_category", { id: "rent", name: "Rent", kind: "expense", ts: "1970-01-01T00:00:00.000Z" });
+    await s.submit("create_income", {
       id: "seed-chk",
       acc_to: "checking",
       amount: 100,
@@ -42,7 +42,7 @@ async function seedMaster(root: string): Promise<void> {
       memo: "initial",
       ts: "1970-01-01T00:00:00.000Z",
     });
-    s.submit("create_income", {
+    await s.submit("create_income", {
       id: "seed-sav",
       acc_to: "savings",
       amount: 200,

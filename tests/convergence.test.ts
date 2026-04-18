@@ -24,14 +24,14 @@ describe("convergence behavior", () => {
     const root = makeRoot();
     const actions = buildActions();
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
-    alice.submit("set", { k: "a", v: "1" });
-    bob.submit("set", { k: "b", v: "2" });
+    await alice.submit("set", { k: "a", v: "1" });
+    await bob.submit("set", { k: "b", v: "2" });
     // alphabetical: alice first → applied; bob's action reads/writes a
     // different row → Tier 1 disjoint → also applied without permutation.
     await master.sync();
@@ -46,15 +46,15 @@ describe("convergence behavior", () => {
     const root = makeRoot();
     const actions = buildActions();
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
     // Both peers set the same key to the SAME value.
-    alice.submit("set", { k: "x", v: "same" });
-    bob.submit("set", { k: "x", v: "same" });
+    await alice.submit("set", { k: "x", v: "same" });
+    await bob.submit("set", { k: "x", v: "same" });
     await master.sync();
 
     // Master applies alice; bob's has overlapping writes (ww), but Tier 2
@@ -80,17 +80,17 @@ describe("convergence behavior", () => {
     const root = makeRoot();
     const actions = buildActions();
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
-    master.submit("set", { k: "row", v: "seed" });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("set", { k: "row", v: "seed" });
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
-    alice.submit("set", { k: "row", v: "alice-intermediate" });
-    alice.submit("del", { k: "row" });
-    bob.submit("set", { k: "row", v: "bob-intermediate" });
-    bob.submit("del", { k: "row" });
+    await alice.submit("set", { k: "row", v: "alice-intermediate" });
+    await alice.submit("del", { k: "row" });
+    await bob.submit("set", { k: "row", v: "bob-intermediate" });
+    await bob.submit("del", { k: "row" });
 
     // Alice wins alphabetically. After alice's two actions, row is deleted.
     await master.sync();
@@ -125,10 +125,10 @@ describe("convergence behavior", () => {
     const { bankActions } = await import("../demo/actions.ts");
     const root = makeRoot();
     const master = await openStore(root, "master", "master", bankActions);
-    master.submit("init_bank", {});
-    master.submit("create_account", { id: "a", name: "A", ts: "t" });
-    master.submit("create_account", { id: "b", name: "B", ts: "t" });
-    master.submit("create_income", {
+    await master.submit("init_bank", {});
+    await master.submit("create_account", { id: "a", name: "A", ts: "t" });
+    await master.submit("create_account", { id: "b", name: "B", ts: "t" });
+    await master.submit("create_income", {
       id: "salary",
       acc_to: "a",
       amount: 100,
@@ -136,7 +136,7 @@ describe("convergence behavior", () => {
       memo: "seed",
       ts: "t",
     });
-    master.submit("create_transfer", {
+    await master.submit("create_transfer", {
       id: "tx1",
       acc_from: "a",
       acc_to: "b",
@@ -149,10 +149,10 @@ describe("convergence behavior", () => {
     const alice = await openStore(root, "alice", "master", bankActions);
     const bob = await openStore(root, "bob", "master", bankActions);
 
-    alice.submit("edit_tx_amount", { id: "tx1", amount: 15 });
-    alice.submit("delete_transaction", { id: "tx1" });
-    bob.submit("edit_tx_amount", { id: "tx1", amount: 20 });
-    bob.submit("delete_transaction", { id: "tx1" });
+    await alice.submit("edit_tx_amount", { id: "tx1", amount: 15 });
+    await alice.submit("delete_transaction", { id: "tx1" });
+    await bob.submit("edit_tx_amount", { id: "tx1", amount: 20 });
+    await bob.submit("delete_transaction", { id: "tx1" });
 
     // Master takes alice's two → tx deleted, balances revert.
     await master.sync();
@@ -200,12 +200,12 @@ describe("convergence behavior", () => {
     const { bankActions } = await import("../demo/actions.ts");
     const root = makeRoot();
     const master = await openStore(root, "master", "master", bankActions);
-    master.submit("init_bank", {});
-    master.submit("create_account", { id: "a", name: "A", ts: "t" });
-    master.submit("create_account", { id: "b", name: "B", ts: "t" });
-    master.submit("create_category", { id: "food", name: "Food", kind: "expense", ts: "t" });
-    master.submit("create_category", { id: "rent", name: "Rent", kind: "expense", ts: "t" });
-    master.submit("create_income", {
+    await master.submit("init_bank", {});
+    await master.submit("create_account", { id: "a", name: "A", ts: "t" });
+    await master.submit("create_account", { id: "b", name: "B", ts: "t" });
+    await master.submit("create_category", { id: "food", name: "Food", kind: "expense", ts: "t" });
+    await master.submit("create_category", { id: "rent", name: "Rent", kind: "expense", ts: "t" });
+    await master.submit("create_income", {
       id: "salary",
       acc_to: "a",
       amount: 1000,
@@ -224,11 +224,11 @@ describe("convergence behavior", () => {
         memo,
         ts: "t",
       });
-    seed("c1", 5, "c1-orig");
-    seed("c2", 6, "c2-orig");
-    seed("vx", 7, "vx-orig");
-    seed("c3", 8, "c3-orig");
-    seed("c4", 9, "c4-orig");
+    await seed("c1", 5, "c1-orig");
+    await seed("c2", 6, "c2-orig");
+    await seed("vx", 7, "vx-orig");
+    await seed("c3", 8, "c3-orig");
+    await seed("c4", 9, "c4-orig");
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", bankActions);
@@ -236,22 +236,22 @@ describe("convergence behavior", () => {
 
     // Conflicts: alice and bob set different memos on the same four txs.
     // Convergent pair: both edit vx's amount then delete it.
-    const pushBoth = (name: string, params: unknown) => {
-      alice.submit(name, params);
-      bob.submit(name, params);
+    const pushBoth = async (name: string, params: unknown) => {
+      await alice.submit(name, params);
+      await bob.submit(name, params);
     };
-    alice.submit("edit_tx_memo", { id: "c1", memo: "alice-c1" });
-    bob.submit("edit_tx_memo", { id: "c1", memo: "bob-c1" });
-    alice.submit("edit_tx_memo", { id: "c2", memo: "alice-c2" });
-    bob.submit("edit_tx_memo", { id: "c2", memo: "bob-c2" });
-    alice.submit("edit_tx_amount", { id: "vx", amount: 20 });
-    alice.submit("delete_transaction", { id: "vx" });
-    bob.submit("edit_tx_amount", { id: "vx", amount: 30 });
-    bob.submit("delete_transaction", { id: "vx" });
-    alice.submit("edit_tx_memo", { id: "c3", memo: "alice-c3" });
-    bob.submit("edit_tx_memo", { id: "c3", memo: "bob-c3" });
-    alice.submit("edit_tx_memo", { id: "c4", memo: "alice-c4" });
-    bob.submit("edit_tx_memo", { id: "c4", memo: "bob-c4" });
+    await alice.submit("edit_tx_memo", { id: "c1", memo: "alice-c1" });
+    await bob.submit("edit_tx_memo", { id: "c1", memo: "bob-c1" });
+    await alice.submit("edit_tx_memo", { id: "c2", memo: "alice-c2" });
+    await bob.submit("edit_tx_memo", { id: "c2", memo: "bob-c2" });
+    await alice.submit("edit_tx_amount", { id: "vx", amount: 20 });
+    await alice.submit("delete_transaction", { id: "vx" });
+    await bob.submit("edit_tx_amount", { id: "vx", amount: 30 });
+    await bob.submit("delete_transaction", { id: "vx" });
+    await alice.submit("edit_tx_memo", { id: "c3", memo: "alice-c3" });
+    await bob.submit("edit_tx_memo", { id: "c3", memo: "bob-c3" });
+    await alice.submit("edit_tx_memo", { id: "c4", memo: "alice-c4" });
+    await bob.submit("edit_tx_memo", { id: "c4", memo: "bob-c4" });
     void pushBoth; // silence the helper we inlined above
 
     await master.sync(); // alice wins alphabetically; bob's memo conflicts remain
@@ -306,14 +306,14 @@ describe("convergence behavior", () => {
     const root = makeRoot();
     const actions = buildActions();
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     for (let i = 0; i < 10; i++) master.submit("set", { k: `m${i}`, v: String(i) });
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     // Meanwhile master keeps writing its own rows.
     for (let i = 10; i < 20; i++) master.submit("set", { k: `m${i}`, v: String(i) });
-    alice.submit("set", { k: "peer", v: "p" });
+    await alice.submit("set", { k: "peer", v: "p" });
 
     await master.sync();
     const kv = readKV(master);

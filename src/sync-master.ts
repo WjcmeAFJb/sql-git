@@ -1,6 +1,6 @@
 import type { Db } from "./db.ts";
 import { appendEntry, readLog, rewriteLog } from "./log.ts";
-import { peerLogPath, snapshotPath } from "./paths.ts";
+import { peerLogPath, snapshotPath, squashedLogPath } from "./paths.ts";
 import { loadSnapshotToMemory, saveDbToFile } from "./snapshot.ts";
 import { getSnapshotHead, setSnapshotHead } from "./db.ts";
 import { applyAction } from "./apply.ts";
@@ -31,12 +31,12 @@ function masterSuffixAfter(
     .sort((a, b) => a.seq - b.seq);
 }
 
-function buildStateAt(
+async function buildStateAt(
   store: Store,
   targetSeq: number,
   alsoIncludeSamePeer?: string,
-): Db {
-  const db = loadSnapshotToMemory(snapshotPath(store.root));
+): Promise<Db> {
+  const db = await loadSnapshotToMemory(snapshotPath(store.root));
   const head = getSnapshotHead(db);
   const entries = store.masterLog
     .filter(
@@ -51,7 +51,7 @@ function buildStateAt(
   return db;
 }
 
-function recordPeerAck(store: Store, peerId: string, masterSeq: number): void {
+async function recordPeerAck(store: Store, peerId: string, masterSeq: number): Promise<void> {
   const snapshotFloor = getSnapshotHead(store.db);
   let latest = snapshotFloor;
   for (const e of store.masterLog) {
@@ -62,7 +62,7 @@ function recordPeerAck(store: Store, peerId: string, masterSeq: number): void {
   if (masterSeq > latest) {
     const entry: PeerAckEntry = { kind: "peer_ack", peer: peerId, masterSeq };
     store.masterLog.push(entry);
-    appendEntry(peerLogPath(store.root, store.masterId), entry);
+    await appendEntry(peerLogPath(store.root, store.masterId), entry);
   }
 }
 
@@ -76,8 +76,8 @@ function latestAckFor(store: Store, peerId: string): number {
   return latest;
 }
 
-function attemptSquash(store: Store): number | undefined {
-  const peerIds = listPeerIds(store.root).filter((p) => p !== store.masterId);
+async function attemptSquash(store: Store): Promise<number | undefined> {
+  const peerIds = (await listPeerIds(store.root)).filter((p) => p !== store.masterId);
   if (peerIds.length === 0) return undefined;
 
   const currentHead = getSnapshotHead(store.db);
@@ -88,7 +88,7 @@ function attemptSquash(store: Store): number | undefined {
   }
   if (!Number.isFinite(minAck) || minAck <= currentHead) return undefined;
 
-  const newSnap = loadSnapshotToMemory(snapshotPath(store.root));
+  const newSnap = await loadSnapshotToMemory(snapshotPath(store.root));
   const toApply = store.masterLog
     .filter(
       (e): e is MasterActionEntry => e.kind === "action" && e.seq > currentHead && e.seq <= minAck,
@@ -96,34 +96,49 @@ function attemptSquash(store: Store): number | undefined {
     .sort((a, b) => a.seq - b.seq);
   for (const e of toApply) applyAction(newSnap, store.actions, e.name, e.params);
   setSnapshotHead(newSnap, minAck);
-  saveDbToFile(newSnap, snapshotPath(store.root));
+  await saveDbToFile(newSnap, snapshotPath(store.root));
   newSnap.close();
   setSnapshotHead(store.db, minAck);
 
   const marker: SnapshotMarkerEntry = { kind: "snapshot", masterSeq: minAck };
   const trimmed: MasterLogEntry[] = [marker];
+  const squashedOut: MasterLogEntry[] = [];
   for (const e of store.masterLog) {
-    if (e.kind === "action" && e.seq > minAck) trimmed.push(e);
-    else if (e.kind === "peer_ack" && e.masterSeq > minAck) trimmed.push(e);
-    else if (e.kind === "snapshot") {
-      // drop older snapshot markers
+    if (e.kind === "action" && e.seq > minAck) {
+      trimmed.push(e);
+    } else if (e.kind === "action" && e.seq <= minAck) {
+      // Baked into the snapshot; a debug consumer may still want to see it.
+      squashedOut.push(e);
+    } else if (e.kind === "peer_ack" && e.masterSeq > minAck) {
+      trimmed.push(e);
+    } else if (e.kind === "peer_ack" && e.masterSeq <= minAck) {
+      squashedOut.push(e);
+    } else if (e.kind === "snapshot") {
+      // Drop older snapshot markers from the live log, but route them to
+      // the squashed log so a viewer can see the chain of squash events.
+      squashedOut.push(e);
     }
   }
   store.masterLog.length = 0;
   store.masterLog.push(...trimmed);
-  rewriteLog(peerLogPath(store.root, store.masterId), trimmed);
+  await rewriteLog(peerLogPath(store.root, store.masterId), trimmed);
+
+  if (store.debug.keepSquashedLog && squashedOut.length > 0) {
+    const squashedPath = squashedLogPath(store.root, store.masterId);
+    for (const e of squashedOut) await appendEntry(squashedPath, e);
+  }
 
   return minAck;
 }
 
-export function runMasterSync(store: Store): SyncReport {
+export async function runMasterSync(store: Store): Promise<SyncReport> {
   const report: SyncReport = { applied: 0, skipped: 0, dropped: 0, forced: 0 };
-  const peerIds = listPeerIds(store.root)
+  const peerIds = (await listPeerIds(store.root))
     .filter((p) => p !== store.masterId)
     .sort();
 
   for (const peerId of peerIds) {
-    const peerLog: PeerLogEntry[] = readLog(peerLogPath(store.root, peerId));
+    const peerLog: PeerLogEntry[] = await readLog(peerLogPath(store.root, peerId));
     const incorporated = new Set<number>();
     for (const e of store.masterLog) {
       if (e.kind === "action" && e.source.peer === peerId) incorporated.add(e.source.seq);
@@ -132,7 +147,7 @@ export function runMasterSync(store: Store): SyncReport {
     let stopped = false;
     for (const entry of peerLog) {
       if (entry.kind === "master_ack") {
-        recordPeerAck(store, peerId, entry.masterSeq);
+        await recordPeerAck(store, peerId, entry.masterSeq);
         continue;
       }
       if (entry.kind !== "action") continue;
@@ -163,7 +178,7 @@ export function runMasterSync(store: Store): SyncReport {
         // other-peer incorporations.
         const suffix = masterSuffixAfter(store, entry.baseMasterSeq, peerId);
         const baseDb =
-          suffix.length === 0 ? store.db : buildStateAt(store, entry.baseMasterSeq, peerId);
+          suffix.length === 0 ? store.db : await buildStateAt(store, entry.baseMasterSeq, peerId);
         conflict = checkConflict({
           currentDb: store.db,
           baseDb,
@@ -191,7 +206,7 @@ export function runMasterSync(store: Store): SyncReport {
         ...(entry.force ? { forced: true } : {}),
       };
       store.masterLog.push(masterEntry);
-      appendEntry(peerLogPath(store.root, store.masterId), masterEntry);
+      await appendEntry(peerLogPath(store.root, store.masterId), masterEntry);
       store.nextMasterSeq = newSeq + 1;
       store.currentMasterSeq = newSeq;
       report.applied++;
@@ -199,7 +214,7 @@ export function runMasterSync(store: Store): SyncReport {
     }
   }
 
-  const squashed = attemptSquash(store);
+  const squashed = await attemptSquash(store);
   if (squashed !== undefined) report.squashedTo = squashed;
 
   return report;

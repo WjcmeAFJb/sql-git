@@ -61,6 +61,15 @@ export class Store {
   /** Registry of action functions keyed by name. Must match across peers. */
   readonly actions: ActionRegistry;
 
+  /**
+   * Debug flags. Off by default. Turning on `keepSquashedLog` makes master
+   * append every entry that leaves the live log during squash into
+   * `<root>/peers/<masterId>.squashed.jsonl` — a convenience for tooling
+   * (history graphs, auditors) that want access to the full log ancestry
+   * of a cluster rather than just the post-squash tail.
+   */
+  readonly debug: { keepSquashedLog: boolean };
+
   /** @internal Master-only: canonical ordered log. Empty for non-master. */
   masterLog: MasterLogEntry[];
 
@@ -88,6 +97,7 @@ export class Store {
     nextMasterSeq: number;
     nextPeerSeq: number;
     currentMasterSeq: number;
+    debug: { keepSquashedLog: boolean };
   }) {
     this.db = init.db;
     this.root = init.root;
@@ -100,6 +110,7 @@ export class Store {
     this.nextMasterSeq = init.nextMasterSeq;
     this.nextPeerSeq = init.nextPeerSeq;
     this.currentMasterSeq = init.currentMasterSeq;
+    this.debug = init.debug;
   }
 
   /**
@@ -122,14 +133,14 @@ export class Store {
    */
   static async open(opts: StoreOptions): Promise<Store> {
     await initSql();
-    ensureDir(peersDir(opts.root));
-    const db = loadSnapshotToMemory(snapshotPath(opts.root));
+    await ensureDir(peersDir(opts.root));
+    const db = await loadSnapshotToMemory(snapshotPath(opts.root));
     const isMaster = opts.peerId === opts.masterId;
     const ownLogPath = peerLogPath(opts.root, opts.peerId);
-    ensureFile(ownLogPath);
+    await ensureFile(ownLogPath);
 
     if (isMaster) {
-      const masterLog: MasterLogEntry[] = readLog(ownLogPath);
+      const masterLog: MasterLogEntry[] = await readLog(ownLogPath);
       const snapshotHead = getSnapshotHead(db);
       let nextMasterSeq = snapshotHead + 1;
       let currentMasterSeq = snapshotHead;
@@ -152,11 +163,12 @@ export class Store {
         nextMasterSeq,
         nextPeerSeq: nextMasterSeq,
         currentMasterSeq,
+        debug: { keepSquashedLog: opts.debug?.keepSquashedLog === true },
       });
     }
 
-    const peerLog: PeerLogEntry[] = readLog(ownLogPath);
-    const masterLogDisk: MasterLogEntry[] = readLog(peerLogPath(opts.root, opts.masterId));
+    const peerLog: PeerLogEntry[] = await readLog(ownLogPath);
+    const masterLogDisk: MasterLogEntry[] = await readLog(peerLogPath(opts.root, opts.masterId));
     const snapshotHead = getSnapshotHead(db);
     try {
       assertFilesConsistent(masterLogDisk, snapshotHead);
@@ -201,6 +213,7 @@ export class Store {
       nextMasterSeq: 0,
       nextPeerSeq,
       currentMasterSeq: lastSeen,
+      debug: { keepSquashedLog: opts.debug?.keepSquashedLog === true },
     });
   }
 
@@ -218,7 +231,7 @@ export class Store {
    *
    * @throws if `name` isn't in the action registry, or if the action throws.
    */
-  submit(name: string, params: unknown): void {
+  async submit(name: string, params: unknown): Promise<void> {
     if (!this.actions[name]) throw new Error(`Unknown action: ${name}`);
     if (this.isMaster) {
       const seq = this.nextMasterSeq;
@@ -231,9 +244,9 @@ export class Store {
         source: { peer: this.peerId, seq },
       };
       this.masterLog.push(entry);
-      appendEntry(peerLogPath(this.root, this.peerId), entry);
       this.nextMasterSeq = seq + 1;
       this.currentMasterSeq = seq;
+      await appendEntry(peerLogPath(this.root, this.peerId), entry);
     } else {
       const seq = this.nextPeerSeq;
       applyAction(this.db, this.actions, name, params);
@@ -245,8 +258,8 @@ export class Store {
         baseMasterSeq: this.currentMasterSeq,
       };
       this.peerLog.push(entry);
-      appendEntry(peerLogPath(this.root, this.peerId), entry);
       this.nextPeerSeq = seq + 1;
+      await appendEntry(peerLogPath(this.root, this.peerId), entry);
     }
   }
 

@@ -165,6 +165,14 @@ export type StoreOptions = {
   masterId: string;
   /** Registry of action implementations, shared across peers. */
   actions: ActionRegistry;
+  /** Optional debug flags. Off by default. */
+  debug?: {
+    /** When true, master writes every log entry that leaves the live log
+     *  during squash into `<root>/peers/<masterId>.squashed.jsonl` — so
+     *  tooling (history graphs, auditors) can still see the full lineage
+     *  of the cluster. */
+    keepSquashedLog?: boolean;
+  };
 };
 
 /** Arguments to {@link Store.sync}. */

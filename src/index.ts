@@ -16,5 +16,19 @@ export type {
   SyncOptions,
   SyncReport,
 } from "./types.ts";
-export { compareDbs, initSql, type Db } from "./db.ts";
+export {
+  compareDbs,
+  initSql,
+  setSqliteInitConfig,
+  type Db,
+  type SqliteInitConfig,
+} from "./db.ts";
 export { tracesConflict } from "./conflict.ts";
+export {
+  setFs,
+  setPath,
+  getFs,
+  getPath,
+  type FsAdapter,
+  type PathAdapter,
+} from "./fs.ts";

@@ -8,11 +8,11 @@ describe("two peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
-    alice.submit("set", { k: "greeting", v: "hi" });
+    await alice.submit("set", { k: "greeting", v: "hi" });
     expect(readKV(alice)).toEqual({ greeting: "hi" });
 
     // Master doesn't see it yet.
@@ -39,14 +39,14 @@ describe("two peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
-    alice.submit("set", { k: "a", v: "1" });
-    bob.submit("set", { k: "b", v: "2" });
+    await alice.submit("set", { k: "a", v: "1" });
+    await bob.submit("set", { k: "b", v: "2" });
 
     await master.sync();
     expect(readKV(master)).toEqual({ a: "1", b: "2" });
@@ -66,15 +66,15 @@ describe("two peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
     // Both peers set the same key to different values.
-    alice.submit("set", { k: "x", v: "alice" });
-    bob.submit("set", { k: "x", v: "bob" });
+    await alice.submit("set", { k: "x", v: "alice" });
+    await bob.submit("set", { k: "x", v: "bob" });
 
     // Alice syncs to master first — master incorporates alice's action.
     await master.sync(); // reads alice first (alphabetical), then bob
@@ -109,14 +109,14 @@ describe("two peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
-    alice.submit("set", { k: "x", v: "alice" });
-    bob.submit("set", { k: "x", v: "bob" });
+    await alice.submit("set", { k: "x", v: "alice" });
+    await bob.submit("set", { k: "x", v: "bob" });
 
     // Master incorporates alice; bob's action stays conflicting.
     await master.sync();
@@ -150,15 +150,15 @@ describe("two peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
     // Alice and bob both propose conflicting writes.
-    alice.submit("set", { k: "x", v: "alice" });
-    bob.submit("set", { k: "x", v: "bob" });
+    await alice.submit("set", { k: "x", v: "alice" });
+    await bob.submit("set", { k: "x", v: "bob" });
 
     // Master takes alice (alphabetical) — bob stalls.
     await master.sync();
@@ -167,7 +167,7 @@ describe("two peers", () => {
     await bob.sync({ onConflict: () => "force" });
 
     // BUT before master sees bob's force, master picks up another change (a second alice action).
-    alice.submit("set", { k: "other", v: "1" });
+    await alice.submit("set", { k: "other", v: "1" });
     await alice.sync(); // alice rebases; no conflict for her new action
     await master.sync(); // master incorporates alice's new action — master head advances
 
@@ -197,15 +197,15 @@ describe("two peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
     // `inc` uses UPDATE counter SET n = n + ? — commutative with itself.
-    alice.submit("inc", { by: 3 });
-    bob.submit("inc", { by: 5 });
+    await alice.submit("inc", { by: 3 });
+    await bob.submit("inc", { by: 5 });
 
     await master.sync();
     expect(readCounter(master)).toBe(8);
@@ -225,12 +225,12 @@ describe("two peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
-    master.submit("set", { k: "a", v: "1" });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("set", { k: "a", v: "1" });
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
-    alice.submit("set", { k: "b", v: "2" });
+    await alice.submit("set", { k: "b", v: "2" });
     await master.sync();
     await alice.sync();
     await master.sync(); // alice acked; master squashes
@@ -251,15 +251,15 @@ describe("two peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
-    master.submit("set", { k: "shared", v: "x" });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("set", { k: "shared", v: "x" });
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
-    alice.submit("del", { k: "shared" });
-    bob.submit("del", { k: "shared" });
+    await alice.submit("del", { k: "shared" });
+    await bob.submit("del", { k: "shared" });
 
     await master.sync(); // alice's delete applies; bob's is still pending
     expect(readKV(master)).toEqual({});

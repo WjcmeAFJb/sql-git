@@ -1,27 +1,17 @@
-import {
-  readFileSync,
-  writeFileSync,
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  renameSync,
-  closeSync,
-  openSync,
-} from "node:fs";
-import { dirname } from "node:path";
+import { fs, path } from "./fs.ts";
 
-export function ensureDir(path: string): void {
-  mkdirSync(path, { recursive: true });
+export async function ensureDir(p: string): Promise<void> {
+  await fs.mkdirp(p);
 }
 
-export function ensureFile(path: string): void {
-  ensureDir(dirname(path));
-  if (!existsSync(path)) closeSync(openSync(path, "a"));
+export async function ensureFile(p: string): Promise<void> {
+  await ensureDir(path.dirname(p));
+  if (!(await fs.exists(p))) await fs.writeFile(p, "");
 }
 
-export function readLog<T>(path: string): T[] {
-  if (!existsSync(path)) return [];
-  const raw = readFileSync(path, "utf8");
+export async function readLog<T>(p: string): Promise<T[]> {
+  if (!(await fs.exists(p))) return [];
+  const raw = await fs.readTextFile(p);
   if (!raw) return [];
   // Only parse lines terminated by a newline. Any trailing content past the
   // last newline is a partial write (crash, or an upstream file syncer like
@@ -39,14 +29,17 @@ export function readLog<T>(path: string): T[] {
   return out;
 }
 
-export function appendEntry<T>(path: string, entry: T): void {
-  ensureDir(dirname(path));
-  appendFileSync(path, JSON.stringify(entry) + "\n");
+export async function appendEntry<T>(p: string, entry: T): Promise<void> {
+  await ensureDir(path.dirname(p));
+  await fs.appendFile(p, JSON.stringify(entry) + "\n");
 }
 
-export function rewriteLog<T>(path: string, entries: T[]): void {
-  ensureDir(dirname(path));
-  const tmp = path + ".tmp";
-  writeFileSync(tmp, entries.map((e) => JSON.stringify(e)).join("\n") + (entries.length ? "\n" : ""));
-  renameSync(tmp, path);
+export async function rewriteLog<T>(p: string, entries: T[]): Promise<void> {
+  await ensureDir(path.dirname(p));
+  const tmp = p + ".tmp";
+  await fs.writeFile(
+    tmp,
+    entries.map((e) => JSON.stringify(e)).join("\n") + (entries.length ? "\n" : ""),
+  );
+  await fs.rename(tmp, p);
 }

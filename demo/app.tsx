@@ -64,7 +64,7 @@ type FormField = FieldText | FieldNumber | FieldSelect;
 type FormSpec = {
   title: string;
   fields: FormField[];
-  onSubmit: (values: Record<string, string>) => string | null;
+  onSubmit: (values: Record<string, string>) => Promise<string | null> | string | null;
 };
 
 // ─── sub-components ──────────────────────────────────────────────────────────
@@ -329,8 +329,7 @@ function Wizard({
     const next = current + 1;
     if (next >= form.fields.length) {
       // Submit.
-      const err = form.onSubmit(newValues);
-      onFinish(err);
+      void Promise.resolve(form.onSubmit(newValues)).then(onFinish);
       return;
     }
     setCurrent(next);
@@ -567,7 +566,7 @@ export function App({
             )
             .get();
           if (!hasAccountsTable) {
-            s.submit("init_bank", {});
+            await s.submit("init_bank", {});
             setHead(s.currentMasterSeq);
           }
         }
@@ -696,10 +695,10 @@ export function App({
   const newAccountForm = (): FormSpec => ({
     title: "New account",
     fields: [{ type: "text", key: "name", label: "Display name" }],
-    onSubmit: (v) => {
+    onSubmit: async (v) => {
       const id = genId("acc");
       try {
-        storeRef.current!.submit("create_account", { id, name: v.name, ts: nowTs() });
+        await storeRef.current!.submit("create_account", { id, name: v.name, ts: nowTs() });
         setOk(`created account ${v.name} (${id})`);
         return null;
       } catch (e) {
@@ -715,7 +714,7 @@ export function App({
     return {
       title: "Rename account — pick one",
       fields: [{ type: "select", key: "id", label: "Account", options: accountOptions() }],
-      onSubmit: (v) => {
+      onSubmit: async (v) => {
         const acc = accounts.find((a) => a.id === v.id);
         if (!acc) return "account not found";
         chain(renameAccountStep2(acc));
@@ -732,13 +731,13 @@ export function App({
         label: `New name (current: "${acc.name}")`,
       },
     ],
-    onSubmit: (v) => {
+    onSubmit: async (v) => {
       if (v.name === acc.name) {
         setInfo("unchanged");
         return null;
       }
       try {
-        storeRef.current!.submit("rename_account", { id: acc.id, name: v.name });
+        await storeRef.current!.submit("rename_account", { id: acc.id, name: v.name });
         setOk(`renamed to "${v.name}"`);
         return null;
       } catch (e) {
@@ -754,9 +753,9 @@ export function App({
     return {
       title: "Delete account",
       fields: [{ type: "select", key: "id", label: "Account", options: accountOptions() }],
-      onSubmit: (v) => {
+      onSubmit: async (v) => {
         try {
-          storeRef.current!.submit("delete_account", { id: v.id });
+          await storeRef.current!.submit("delete_account", { id: v.id });
           setOk(`deleted account ${v.id}`);
           return null;
         } catch (e) {
@@ -782,10 +781,10 @@ export function App({
         ],
       },
     ],
-    onSubmit: (v) => {
+    onSubmit: async (v) => {
       const id = genId("cat");
       try {
-        storeRef.current!.submit("create_category", {
+        await storeRef.current!.submit("create_category", {
           id,
           name: v.name,
           kind: v.kind as "income" | "expense" | "both",
@@ -808,7 +807,7 @@ export function App({
       fields: [
         { type: "select", key: "id", label: "Category", options: categoryOptions(false) },
       ],
-      onSubmit: (v) => {
+      onSubmit: async (v) => {
         const cat = categories.find((c) => c.id === v.id);
         if (!cat) return "category not found";
         chain(renameCategoryStep2(cat));
@@ -825,13 +824,13 @@ export function App({
         label: `New name (current: "${cat.name}")`,
       },
     ],
-    onSubmit: (v) => {
+    onSubmit: async (v) => {
       if (v.name === cat.name) {
         setInfo("unchanged");
         return null;
       }
       try {
-        storeRef.current!.submit("rename_category", { id: cat.id, name: v.name });
+        await storeRef.current!.submit("rename_category", { id: cat.id, name: v.name });
         setOk(`renamed to "${v.name}"`);
         return null;
       } catch (e) {
@@ -849,9 +848,9 @@ export function App({
       fields: [
         { type: "select", key: "id", label: "Category", options: categoryOptions(false) },
       ],
-      onSubmit: (v) => {
+      onSubmit: async (v) => {
         try {
-          storeRef.current!.submit("delete_category", { id: v.id });
+          await storeRef.current!.submit("delete_category", { id: v.id });
           setOk(`deleted category ${v.id}`);
           return null;
         } catch (e) {
@@ -880,10 +879,10 @@ export function App({
         },
         { type: "text", key: "memo", label: "Memo (optional)", optional: true },
       ],
-      onSubmit: (v) => {
+      onSubmit: async (v) => {
         const id = genId("inc");
         try {
-          storeRef.current!.submit("create_income", {
+          await storeRef.current!.submit("create_income", {
             id,
             acc_to: v.acc_to,
             amount: Number(v.amount),
@@ -917,10 +916,10 @@ export function App({
         },
         { type: "text", key: "memo", label: "Memo (optional)", optional: true },
       ],
-      onSubmit: (v) => {
+      onSubmit: async (v) => {
         const id = genId("exp");
         try {
-          storeRef.current!.submit("create_expense", {
+          await storeRef.current!.submit("create_expense", {
             id,
             acc_from: v.acc_from,
             amount: Number(v.amount),
@@ -949,11 +948,11 @@ export function App({
         { type: "select", key: "acc_to", label: "To", options: accountOptions() },
         { type: "text", key: "memo", label: "Memo (optional)", optional: true },
       ],
-      onSubmit: (v) => {
+      onSubmit: async (v) => {
         if (v.acc_from === v.acc_to) return "from and to must differ";
         const id = genId("tr");
         try {
-          storeRef.current!.submit("create_transfer", {
+          await storeRef.current!.submit("create_transfer", {
             id,
             acc_from: v.acc_from,
             acc_to: v.acc_to,
@@ -981,7 +980,7 @@ export function App({
       fields: [
         { type: "select", key: "id", label: "Transaction", options: txOptions() },
       ],
-      onSubmit: (v) => {
+      onSubmit: async (v) => {
         const tx = transactions.find((t) => t.id === v.id);
         if (!tx) return "not found";
         chain(editTxStep2(tx));
@@ -1021,7 +1020,7 @@ export function App({
           options: catOpts,
         },
       ],
-      onSubmit: (v) => {
+      onSubmit: async (v) => {
         const changes: string[] = [];
         try {
           if (v.amount !== "") {
@@ -1030,7 +1029,7 @@ export function App({
               return `amount must be a positive number`;
             }
             if (newAmount !== tx.amount) {
-              storeRef.current!.submit("edit_tx_amount", { id: tx.id, amount: newAmount });
+              await storeRef.current!.submit("edit_tx_amount", { id: tx.id, amount: newAmount });
               changes.push(`amount $${tx.amount}→$${newAmount}`);
             }
           }
@@ -1038,13 +1037,13 @@ export function App({
           // "blank = keep" from "intentionally clear" would require a sentinel
           // but keeping empty memos is the rarer case.
           if (v.memo !== "" && v.memo !== tx.memo) {
-            storeRef.current!.submit("edit_tx_memo", { id: tx.id, memo: v.memo });
+            await storeRef.current!.submit("edit_tx_memo", { id: tx.id, memo: v.memo });
             changes.push(`memo`);
           }
           if (v.category_id !== KEEP) {
             const newCat = v.category_id || null;
             if (newCat !== tx.category_id) {
-              storeRef.current!.submit("edit_tx_category", {
+              await storeRef.current!.submit("edit_tx_category", {
                 id: tx.id,
                 category_id: newCat,
               });
@@ -1068,9 +1067,9 @@ export function App({
     return {
       title: "Delete transaction",
       fields: [{ type: "select", key: "id", label: "Transaction", options: txOptions() }],
-      onSubmit: (v) => {
+      onSubmit: async (v) => {
         try {
-          storeRef.current!.submit("delete_transaction", { id: v.id });
+          await storeRef.current!.submit("delete_transaction", { id: v.id });
           setOk(`deleted tx ${v.id}`);
           return null;
         } catch (e) {

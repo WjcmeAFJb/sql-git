@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { fs } from "./fs.ts";
 import { Db, loadDbFromBytes, openMemoryDb } from "./db.ts";
 
 /*
@@ -7,16 +7,16 @@ import { Db, loadDbFromBytes, openMemoryDb } from "./db.ts";
  * via the structural dump we already needed for `compareDbs`.
  */
 
-export function loadSnapshotToMemory(snapshotFile: string): Db {
-  if (!existsSync(snapshotFile)) return openMemoryDb();
-  const bytes = readFileSync(snapshotFile);
+export async function loadSnapshotToMemory(snapshotFile: string): Promise<Db> {
+  if (!(await fs.exists(snapshotFile))) return openMemoryDb();
+  const bytes = await fs.readFile(snapshotFile);
   if (bytes.length === 0) return openMemoryDb();
   return loadDbFromBytes(bytes);
 }
 
-export function saveDbToFile(db: Db, path: string): void {
+export async function saveDbToFile(db: Db, p: string): Promise<void> {
   const bytes = db.serialize();
-  const tmp = path + ".tmp";
-  writeFileSync(tmp, bytes);
-  renameSync(tmp, path);
+  const tmp = p + ".tmp";
+  await fs.writeFile(tmp, bytes);
+  await fs.rename(tmp, p);
 }

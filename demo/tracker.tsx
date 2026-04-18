@@ -1,4 +1,5 @@
 #!/usr/bin/env -S node --experimental-strip-types --no-warnings
+import "../src/fs-node.ts";
 import React from "react";
 import { render } from "ink";
 import { existsSync, readFileSync } from "node:fs";

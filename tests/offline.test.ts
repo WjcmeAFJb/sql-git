@@ -26,7 +26,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
       masterId: "master",
       actions,
     });
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     // Syncthing delivers master's files to alice's host.
@@ -43,8 +43,8 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     expect(readKV(alice)).toEqual({});
 
     // Alice goes offline (no file sync) and writes several actions.
-    alice.submit("set", { k: "offline-1", v: "x" });
-    alice.submit("set", { k: "offline-2", v: "y" });
+    await alice.submit("set", { k: "offline-1", v: "x" });
+    await alice.submit("set", { k: "offline-2", v: "y" });
 
     // Master still can't see alice's writes — her jsonl hasn't reached master's host.
     const m0 = await master.sync();
@@ -78,8 +78,8 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
       masterId: "master",
       actions,
     });
-    master.submit(INIT_SCHEMA, {});
-    master.submit("set", { k: "shared", v: "orig" });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("set", { k: "shared", v: "orig" });
     await master.sync();
     fileSyncAll(cluster);
 
@@ -100,13 +100,13 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
 
     // Bob (online) submits and master incorporates — master's state moves on,
     // but only bob's and master's hosts know about it so far.
-    bob.submit("set", { k: "shared", v: "bob-wrote" });
+    await bob.submit("set", { k: "shared", v: "bob-wrote" });
     fileSyncPush(cluster, "bob");
     await master.sync();
     expect(readKV(master)).toEqual({ shared: "bob-wrote" });
 
     // Alice — meanwhile isolated — writes based on her stale view where shared=orig.
-    alice.submit("set", { k: "shared", v: "alice-wrote" });
+    await alice.submit("set", { k: "shared", v: "alice-wrote" });
     expect(readKV(alice)).toEqual({ shared: "alice-wrote" });
 
     // Syncthing finally delivers master's (and bob's) updates to alice.
@@ -138,8 +138,8 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
       masterId: "master",
       actions,
     });
-    master.submit(INIT_SCHEMA, {});
-    master.submit("set", { k: "counter", v: "start" });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("set", { k: "counter", v: "start" });
     await master.sync();
     fileSyncAll(cluster);
 
@@ -157,8 +157,8 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     });
 
     // Both offline; concurrent conflicting writes.
-    alice.submit("set", { k: "counter", v: "alice" });
-    bob.submit("set", { k: "counter", v: "bob" });
+    await alice.submit("set", { k: "counter", v: "alice" });
+    await bob.submit("set", { k: "counter", v: "bob" });
 
     // Syncthing delivers ONLY alice's log to master first (bob is still mid-sync).
     fileSyncPush(cluster, "alice");
@@ -201,9 +201,9 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
       masterId: "master",
       actions,
     });
-    master.submit(INIT_SCHEMA, {});
-    master.submit("set", { k: "server-state", v: "42" });
-    master.submit("inc", { by: 7 });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("set", { k: "server-state", v: "42" });
+    await master.submit("inc", { by: 7 });
     await master.sync();
 
     // Syncthing delivers to alice's host. Alice hasn't even opened yet.
@@ -223,7 +223,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     ).toBe(7);
 
     // Alice proposes her own action, offline.
-    alice.submit("inc", { by: 3 });
+    await alice.submit("inc", { by: 3 });
 
     // Syncthing pushes alice's log; master syncs, picks it up, snapshot can
     // squash once alice acks (which happens on her next peer-sync).
@@ -253,8 +253,8 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
       masterId: "master",
       actions,
     });
-    master.submit(INIT_SCHEMA, {});
-    master.submit("set", { k: "x", v: "1" });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("set", { k: "x", v: "1" });
     await master.sync();
     fileSyncAll(cluster);
 
@@ -316,7 +316,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
       masterId: "master",
       actions,
     });
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
     fileSyncPush(cluster, "master");
 
@@ -329,7 +329,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
 
     // Simulate multiple Syncthing deliveries with peer-sync run after each.
     for (let i = 0; i < 5; i++) {
-      master.submit("set", { k: `k${i}`, v: String(i) });
+      await master.submit("set", { k: `k${i}`, v: String(i) });
       await master.sync();
       fileSyncPush(cluster, "master");
       await alice.sync(); // debounced file-watch triggered peer-sync
@@ -337,7 +337,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     expect(Object.keys(readKV(alice))).toHaveLength(5);
 
     // Now alice writes while offline; a later file-watch tick catches master up.
-    alice.submit("set", { k: "from-alice", v: "offline-write" });
+    await alice.submit("set", { k: "from-alice", v: "offline-write" });
     fileSyncPush(cluster, "alice");
     await master.sync();
     expect(readKV(master)["from-alice"]).toBe("offline-write");

@@ -8,16 +8,16 @@ describe("three peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
-    master.submit("inc", { by: 1 });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("inc", { by: 1 });
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
-    alice.submit("inc", { by: 10 });
-    bob.submit("inc", { by: 100 });
-    master.submit("inc", { by: 1000 });
+    await alice.submit("inc", { by: 10 });
+    await bob.submit("inc", { by: 100 });
+    await master.submit("inc", { by: 1000 });
 
     await master.sync();
     expect(readCounter(master)).toBe(1111);
@@ -41,8 +41,8 @@ describe("three peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
-    master.submit("set", { k: "seed", v: "0" });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("set", { k: "seed", v: "0" });
 
     // Create bob's log file so master knows he exists, but then "offline" him
     // by not syncing him after initial creation.
@@ -52,7 +52,7 @@ describe("three peers", () => {
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
-    alice.submit("set", { k: "a", v: "alice-val" });
+    await alice.submit("set", { k: "a", v: "alice-val" });
     await master.sync();
     await alice.sync();
 
@@ -79,14 +79,14 @@ describe("three peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
-    alice.submit("set", { k: "x", v: "alice" });
-    bob.submit("set", { k: "x", v: "bob" });
+    await alice.submit("set", { k: "x", v: "alice" });
+    await bob.submit("set", { k: "x", v: "bob" });
 
     await master.sync(); // alice wins alphabetically
     expect(readKV(master)).toEqual({ x: "alice" });
@@ -110,14 +110,14 @@ describe("three peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
-    alice.submit("set", { k: "x", v: "alice" });
-    bob.submit("set", { k: "x", v: "bob" });
+    await alice.submit("set", { k: "x", v: "alice" });
+    await bob.submit("set", { k: "x", v: "bob" });
 
     await master.sync(); // alice wins
     // Bob force-syncs — records force with base=master head now (seq 2).
@@ -125,7 +125,7 @@ describe("three peers", () => {
 
     // Master submits an independent action BEFORE the next master sync picks up bob's force.
     // This advances master head past bob's recorded force base.
-    master.submit("set", { k: "y", v: "from-master" });
+    await master.submit("set", { k: "y", v: "from-master" });
 
     // Now master syncs — bob's force has base=2 but current master head=3 → stale, reject.
     await master.sync();
@@ -156,19 +156,19 @@ describe("three peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     // Alice creates a record.
-    alice.submit("insertOnce", { k: "doc1", v: "draft" });
+    await alice.submit("insertOnce", { k: "doc1", v: "draft" });
     await alice.sync(); // nothing to rebase yet, but writes ack
     await master.sync(); // master picks up alice's action
 
     const bob = await openStore(root, "bob", "master", actions);
     // Bob sees alice's record (via auto-catch-up) and updates it.
     expect(readKV(bob)).toEqual({ doc1: "draft" });
-    bob.submit("set", { k: "doc1", v: "published" });
+    await bob.submit("set", { k: "doc1", v: "published" });
 
     await master.sync();
     expect(readKV(master)).toEqual({ doc1: "published" });
@@ -187,18 +187,18 @@ describe("three peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
     // Alice races to insert the key.
-    alice.submit("insertOnce", { k: "only", v: "alice" });
+    await alice.submit("insertOnce", { k: "only", v: "alice" });
     // Bob also inserts (will fail against alice after master picks alice).
-    bob.submit("insertOnce", { k: "only", v: "bob" });
+    await bob.submit("insertOnce", { k: "only", v: "bob" });
     // Bob's second action operates on the key — if first is rejected, second is skipped too.
-    bob.submit("set", { k: "only", v: "bob-2" });
+    await bob.submit("set", { k: "only", v: "bob-2" });
 
     await master.sync();
     // Master applies alice's insert, then tries bob: first fails (duplicate), stops.
@@ -232,8 +232,8 @@ describe("three peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
-    master.submit("set", { k: "row", v: "1" });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("set", { k: "row", v: "1" });
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
@@ -242,9 +242,9 @@ describe("three peers", () => {
     expect(readKV(bob)).toEqual({ row: "1" });
 
     // All three submit concurrently (no intervening syncs).
-    master.submit("set", { k: "row", v: "3" });
-    alice.submit("set", { k: "row", v: "5" });
-    bob.submit("set", { k: "row", v: "4" });
+    await master.submit("set", { k: "row", v: "3" });
+    await alice.submit("set", { k: "row", v: "5" });
+    await bob.submit("set", { k: "row", v: "4" });
 
     // Master.sync: alice and bob both non-commute with master's own set=3, both stall.
     const m1 = await master.sync();
@@ -299,14 +299,14 @@ describe("three peers", () => {
     const actions = buildActions();
 
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
     const bob = await openStore(root, "bob", "master", actions);
 
-    alice.submit("set", { k: "shared", v: "alice" });
-    bob.submit("set", { k: "shared", v: "bob" });
+    await alice.submit("set", { k: "shared", v: "alice" });
+    await bob.submit("set", { k: "shared", v: "bob" });
 
     await master.sync(); // alice in, bob stalls
     await alice.sync();
@@ -314,7 +314,7 @@ describe("three peers", () => {
 
     // Bob drops, then submits a new action that doesn't conflict.
     await bob.sync({ onConflict: () => "drop" });
-    bob.submit("set", { k: "bob-only", v: "here" });
+    await bob.submit("set", { k: "bob-only", v: "here" });
 
     await master.sync();
     expect(readKV(master)).toEqual({ shared: "alice", "bob-only": "here" });

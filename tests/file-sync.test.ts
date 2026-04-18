@@ -8,7 +8,7 @@ import type { MasterLogEntry } from "../src/types.ts";
 import { INIT_SCHEMA, buildActions, makeRoot, openStore, readKV } from "./helpers.ts";
 
 describe("file-sync robustness", () => {
-  it("readLog drops a truncated trailing line (mid-append / mid-file-sync artifact)", () => {
+  it("readLog drops a truncated trailing line (mid-append / mid-file-sync artifact)", async () => {
     const root = makeRoot();
     mkdirSync(peersDir(root), { recursive: true });
     const p = peerLogPath(root, "writer");
@@ -17,17 +17,17 @@ describe("file-sync robustness", () => {
     const partial = '{"kind":"action","seq":3,"name":"c"'; // truncated: no closing brace, no newline
     writeFileSync(p, `${l1}\n${l2}\n${partial}`);
 
-    const parsed = readLog<{ kind: string; seq?: number }>(p);
+    const parsed = await readLog<{ kind: string; seq?: number }>(p);
     expect(parsed).toHaveLength(2);
     expect(parsed.map((e) => e.seq)).toEqual([1, 2]);
   });
 
-  it("readLog returns [] on a never-written log file (Syncthing placeholder)", () => {
+  it("readLog returns [] on a never-written log file (Syncthing placeholder)", async () => {
     const root = makeRoot();
     mkdirSync(peersDir(root), { recursive: true });
     const p = peerLogPath(root, "empty");
     writeFileSync(p, "");
-    expect(readLog(p)).toEqual([]);
+    expect(await readLog(p)).toEqual([]);
   });
 
   it("peer open throws FileSyncLagError if master log declares a snapshot head the local snapshot.db hasn't caught up to", async () => {
@@ -73,10 +73,10 @@ describe("file-sync robustness", () => {
     const source = makeRoot();
     const actions = buildActions();
     const master = await openStore(source, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
-    master.submit("set", { k: "persistent", v: "yes" });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("set", { k: "persistent", v: "yes" });
     const alice = await openStore(source, "alice", "master", actions);
-    alice.submit("set", { k: "alice-key", v: "1" });
+    await alice.submit("set", { k: "alice-key", v: "1" });
     await master.sync();
     await alice.sync();
     await master.sync(); // squashes — snapshot.db now has head > 0
@@ -102,17 +102,17 @@ describe("file-sync robustness", () => {
     const root = makeRoot();
     const actions = buildActions();
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
-    master.submit("set", { k: "a", v: "1" });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("set", { k: "a", v: "1" });
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
-    alice.submit("set", { k: "a-local", v: "x" });
+    await alice.submit("set", { k: "a-local", v: "x" });
 
     // Simulate: after alice opened, a squash happens externally on master's
     // filesystem and Syncthing delivers the new trimmed master.jsonl to
     // alice — but NOT the matching snapshot.db yet.
-    const masterLog = readLog<MasterLogEntry>(peerLogPath(root, "master"));
+    const masterLog = await readLog<MasterLogEntry>(peerLogPath(root, "master"));
     const maxSeq = masterLog
       .filter((e): e is Extract<MasterLogEntry, { kind: "action" }> => e.kind === "action")
       .reduce((m, e) => Math.max(m, e.seq), 0);
@@ -137,22 +137,22 @@ describe("file-sync robustness", () => {
     const root = makeRoot();
     const actions = buildActions();
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     const alice = await openStore(root, "alice", "master", actions);
 
     // Alice submits several actions; between them master reads her log.
-    alice.submit("set", { k: "one", v: "1" });
+    await alice.submit("set", { k: "one", v: "1" });
     let snap1 = readFileSync(peerLogPath(root, "alice"), "utf8");
     expect(snap1.endsWith("\n")).toBe(true);
 
-    alice.submit("set", { k: "two", v: "2" });
+    await alice.submit("set", { k: "two", v: "2" });
     let snap2 = readFileSync(peerLogPath(root, "alice"), "utf8");
     expect(snap2.endsWith("\n")).toBe(true);
     expect(snap2.startsWith(snap1)).toBe(true); // append-only
 
-    alice.submit("set", { k: "three", v: "3" });
+    await alice.submit("set", { k: "three", v: "3" });
     await master.sync();
     expect(readKV(master)).toEqual({ one: "1", two: "2", three: "3" });
 
@@ -164,8 +164,8 @@ describe("file-sync robustness", () => {
     const root = makeRoot();
     const actions = buildActions();
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
-    master.submit("set", { k: "real", v: "1" });
+    await master.submit(INIT_SCHEMA, {});
+    await master.submit("set", { k: "real", v: "1" });
     const alice = await openStore(root, "alice", "master", actions);
     await master.sync();
     await alice.sync();
@@ -192,7 +192,7 @@ describe("file-sync robustness", () => {
     const root = makeRoot();
     const actions = buildActions();
     const master = await openStore(root, "master", "master", actions);
-    master.submit(INIT_SCHEMA, {});
+    await master.submit(INIT_SCHEMA, {});
     await master.sync();
 
     // Alice's log is replicated in from another host — we simulate this by
