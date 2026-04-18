@@ -25,7 +25,7 @@ node --experimental-strip-types - <<EOF
 import { Store } from "./src/index.ts";
 import { bankActions } from "./demo/actions.ts";
 const T0 = "1970-01-01T00:00:00.000Z";
-const s = Store.open({ root: "$ROOT/desktop", peerId: "desktop", masterId: "desktop", actions: bankActions });
+const s = await Store.open({ root: "$ROOT/desktop", peerId: "desktop", masterId: "desktop", actions: bankActions });
 s.submit("init_bank", {});
 s.submit("create_account", { id: "checking", name: "Checking", ts: T0 });
 s.submit("create_account", { id: "savings", name: "Savings", ts: T0 });

@@ -69,15 +69,17 @@ export const bankActions: ActionRegistry = {
         UPDATE accounts SET balance = balance - OLD.amount
           WHERE OLD.acc_to   IS NOT NULL AND id = OLD.acc_to;
       END;
+      -- Net-delta UPDATE: edit_tx_amount only changes the amount column,
+      -- so OLD.acc_* == NEW.acc_* and we can collapse "unapply old, apply
+      -- new" into one assignment per affected account. This avoids the
+      -- intermediate state that would trip CHECK (balance >= 0) when OLD
+      -- exceeds the current balance (e.g. editing a salary amount after
+      -- the user has already spent most of it).
       CREATE TRIGGER IF NOT EXISTS txn_update AFTER UPDATE OF amount ON transactions BEGIN
-        UPDATE accounts SET balance = balance + OLD.amount
+        UPDATE accounts SET balance = balance + OLD.amount - NEW.amount
           WHERE OLD.acc_from IS NOT NULL AND id = OLD.acc_from;
-        UPDATE accounts SET balance = balance - OLD.amount
+        UPDATE accounts SET balance = balance + NEW.amount - OLD.amount
           WHERE OLD.acc_to   IS NOT NULL AND id = OLD.acc_to;
-        UPDATE accounts SET balance = balance - NEW.amount
-          WHERE NEW.acc_from IS NOT NULL AND id = NEW.acc_from;
-        UPDATE accounts SET balance = balance + NEW.amount
-          WHERE NEW.acc_to   IS NOT NULL AND id = NEW.acc_to;
       END;
     `);
   },

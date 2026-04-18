@@ -20,7 +20,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     const actions = buildActions();
 
     // Master bootstraps. Its files exist only on master's host.
-    const master = Store.open({
+    const master = await Store.open({
       root: cluster.root("master"),
       peerId: "master",
       masterId: "master",
@@ -34,7 +34,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
 
     // Alice opens on her host — auto-catches-up to master's state via her
     // local copy of master.jsonl + snapshot.db.
-    const alice = Store.open({
+    const alice = await Store.open({
       root: cluster.root("alice"),
       peerId: "alice",
       masterId: "master",
@@ -72,7 +72,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     const cluster = makeCluster(["master", "alice", "bob"], "master");
     const actions = buildActions();
 
-    const master = Store.open({
+    const master = await Store.open({
       root: cluster.root("master"),
       peerId: "master",
       masterId: "master",
@@ -83,13 +83,13 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     await master.sync();
     fileSyncAll(cluster);
 
-    const alice = Store.open({
+    const alice = await Store.open({
       root: cluster.root("alice"),
       peerId: "alice",
       masterId: "master",
       actions,
     });
-    const bob = Store.open({
+    const bob = await Store.open({
       root: cluster.root("bob"),
       peerId: "bob",
       masterId: "master",
@@ -132,7 +132,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     const cluster = makeCluster(["master", "alice", "bob"], "master");
     const actions = buildActions();
 
-    const master = Store.open({
+    const master = await Store.open({
       root: cluster.root("master"),
       peerId: "master",
       masterId: "master",
@@ -143,13 +143,13 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     await master.sync();
     fileSyncAll(cluster);
 
-    const alice = Store.open({
+    const alice = await Store.open({
       root: cluster.root("alice"),
       peerId: "alice",
       masterId: "master",
       actions,
     });
-    const bob = Store.open({
+    const bob = await Store.open({
       root: cluster.root("bob"),
       peerId: "bob",
       masterId: "master",
@@ -195,7 +195,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     const actions = buildActions();
 
     // Master does meaningful work in isolation.
-    const master = Store.open({
+    const master = await Store.open({
       root: cluster.root("master"),
       peerId: "master",
       masterId: "master",
@@ -211,7 +211,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
 
     // Alice opens for the first time. No local log; auto-catch-up picks up
     // everything from her local copies of master.jsonl + snapshot.db.
-    const alice = Store.open({
+    const alice = await Store.open({
       root: cluster.root("alice"),
       peerId: "alice",
       masterId: "master",
@@ -247,7 +247,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     const cluster = makeCluster(["master", "alice"], "master");
     const actions = buildActions();
 
-    const master = Store.open({
+    const master = await Store.open({
       root: cluster.root("master"),
       peerId: "master",
       masterId: "master",
@@ -258,7 +258,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     await master.sync();
     fileSyncAll(cluster);
 
-    const alice = Store.open({
+    const alice = await Store.open({
       root: cluster.root("alice"),
       peerId: "alice",
       masterId: "master",
@@ -280,18 +280,18 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
 
     // Alice opening now observes the inconsistency and refuses.
     const { FileSyncLagError } = await import("../src/index.ts");
-    expect(() =>
+    await expect(
       Store.open({
         root: cluster.root("alice"),
         peerId: "alice",
         masterId: "master",
         actions,
       }),
-    ).toThrow(FileSyncLagError);
+    ).rejects.toBeInstanceOf(FileSyncLagError);
 
     // Later, Syncthing delivers snapshot.db too. Alice now opens cleanly.
     copy(sp(cluster.root("master")), sp(cluster.root("alice")));
-    const alice2 = Store.open({
+    const alice2 = await Store.open({
       root: cluster.root("alice"),
       peerId: "alice",
       masterId: "master",
@@ -310,7 +310,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     const cluster = makeCluster(["master", "alice"], "master");
     const actions = buildActions();
 
-    const master = Store.open({
+    const master = await Store.open({
       root: cluster.root("master"),
       peerId: "master",
       masterId: "master",
@@ -320,7 +320,7 @@ describe("offline / multi-host (separate roots + explicit file sync)", () => {
     await master.sync();
     fileSyncPush(cluster, "master");
 
-    const alice = Store.open({
+    const alice = await Store.open({
       root: cluster.root("alice"),
       peerId: "alice",
       masterId: "master",

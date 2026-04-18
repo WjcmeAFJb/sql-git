@@ -24,12 +24,12 @@ afterEach(() => {
   }
 });
 
-export function openStore(
+export async function openStore(
   root: string,
   peerId: string,
   masterId: string,
   actions: ActionRegistry,
-): Store {
+): Promise<Store> {
   const opts: StoreOptions = { root, peerId, masterId, actions };
   return Store.open(opts);
 }

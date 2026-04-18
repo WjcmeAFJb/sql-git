@@ -420,6 +420,7 @@ function Wizard({
 
 function ConflictPanel({ conflict }: { conflict: PendingConflict }) {
   const c = conflict.ctx;
+  const canForce = c.kind !== "error";
   return (
     <Box flexDirection="column" borderStyle="double" borderColor="red" paddingX={1}>
       <Box>
@@ -433,7 +434,14 @@ function ConflictPanel({ conflict }: { conflict: PendingConflict }) {
       {c.error ? <Text color="red">error: {c.error.message}</Text> : null}
       <Box marginTop={1}>
         <Text>
-          <Text bold>[d]</Text>rop · <Text bold>[f]</Text>orce ·{" "}
+          <Text bold>[d]</Text>rop ·{" "}
+          {canForce ? (
+            <>
+              <Text bold>[f]</Text>orce ·{" "}
+            </>
+          ) : (
+            <Text dimColor>[f]orce unavailable (action errors on current state) · </Text>
+          )}
           <Text bold>[r]</Text>etry (prepend a fixing transfer)
         </Text>
       </Box>
@@ -517,6 +525,8 @@ export function App({
         `dropped=${report.dropped}`,
         `forced=${report.forced}`,
       ];
+      if (report.convergent !== undefined && report.convergent > 0)
+        bits.push(`convergent=${report.convergent}`);
       if (report.squashedTo !== undefined) bits.push(`squashedTo=${report.squashedTo}`);
       setOk(`synced ${bits.join(" ")}`);
       setMode("idle");
@@ -539,27 +549,35 @@ export function App({
 
   // open store + auto-init master schema
   useEffect(() => {
-    try {
-      const s = Store.open({ root, peerId, masterId, actions: bankActions });
-      storeRef.current = s;
-      setStore(s);
-      setHead(s.currentMasterSeq);
-      if (s.isMaster) {
-        const hasAccountsTable = s.db
-          .prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'",
-          )
-          .get();
-        if (!hasAccountsTable) {
-          s.submit("init_bank", {});
-          setHead(s.currentMasterSeq);
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await Store.open({ root, peerId, masterId, actions: bankActions });
+        if (cancelled) {
+          s.close();
+          return;
         }
+        storeRef.current = s;
+        setStore(s);
+        setHead(s.currentMasterSeq);
+        if (s.isMaster) {
+          const hasAccountsTable = s.db
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'",
+            )
+            .get();
+          if (!hasAccountsTable) {
+            s.submit("init_bank", {});
+            setHead(s.currentMasterSeq);
+          }
+        }
+        setInfo("opened");
+      } catch (err) {
+        setOpenError(err instanceof Error ? err.message : String(err));
       }
-      setInfo("opened");
-    } catch (err) {
-      setOpenError(err instanceof Error ? err.message : String(err));
-    }
+    })();
     return () => {
+      cancelled = true;
       storeRef.current?.close();
       storeRef.current = null;
     };
@@ -1097,6 +1115,10 @@ export function App({
         setConflict(null);
         setMode("syncing");
       } else if (raw === "f") {
+        if (conflict.ctx.kind === "error") {
+          setErr("cannot force an erroring action — drop or retry with a fix");
+          return;
+        }
         conflict.resolve("force");
         setConflict(null);
         setMode("syncing");

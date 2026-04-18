@@ -7,11 +7,11 @@ describe("two peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
     alice.submit("set", { k: "greeting", v: "hi" });
     expect(readKV(alice)).toEqual({ greeting: "hi" });
 
@@ -38,12 +38,12 @@ describe("two peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     alice.submit("set", { k: "a", v: "1" });
     bob.submit("set", { k: "b", v: "2" });
@@ -65,12 +65,12 @@ describe("two peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     // Both peers set the same key to different values.
     alice.submit("set", { k: "x", v: "alice" });
@@ -108,12 +108,12 @@ describe("two peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     alice.submit("set", { k: "x", v: "alice" });
     bob.submit("set", { k: "x", v: "bob" });
@@ -149,12 +149,12 @@ describe("two peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     // Alice and bob both propose conflicting writes.
     alice.submit("set", { k: "x", v: "alice" });
@@ -196,12 +196,12 @@ describe("two peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     // `inc` uses UPDATE counter SET n = n + ? — commutative with itself.
     alice.submit("inc", { by: 3 });
@@ -224,12 +224,12 @@ describe("two peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     master.submit("set", { k: "a", v: "1" });
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
     alice.submit("set", { k: "b", v: "2" });
     await master.sync();
     await alice.sync();
@@ -238,39 +238,43 @@ describe("two peers", () => {
     alice.close();
 
     // Re-open both; everything should still be there, driven only by snapshot + small log.
-    const master2 = openStore(root, "master", "master", actions);
-    const alice2 = openStore(root, "alice", "master", actions);
+    const master2 = await openStore(root, "master", "master", actions);
+    const alice2 = await openStore(root, "alice", "master", actions);
     expect(readKV(master2)).toEqual({ a: "1", b: "2" });
     expect(readKV(alice2)).toEqual({ a: "1", b: "2" });
     master2.close();
     alice2.close();
   });
 
-  it("error conflict: peer dels a key that another peer already deleted", async () => {
+  it("both peers delete the same key: global pre-check absorbs bob's work, no resolver invoked", async () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     master.submit("set", { k: "shared", v: "x" });
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     alice.submit("del", { k: "shared" });
     bob.submit("del", { k: "shared" });
 
-    await master.sync(); // alice's delete applies; bob's would error on current state
+    await master.sync(); // alice's delete applies; bob's is still pending
     expect(readKV(master)).toEqual({});
 
+    // Pre-check sees that `base + bob.del` yields the same state as the
+    // rebased master (both have "shared" gone) — drop bob's pending action
+    // without invoking the resolver.
     const seen: Array<{ kind: string; name: string }> = [];
     const resolver: Resolver = (ctx) => {
       seen.push({ kind: ctx.kind, name: ctx.action.name });
       return "drop";
     };
-    await bob.sync({ onConflict: resolver });
-    expect(seen).toEqual([{ kind: "error", name: "del" }]);
+    const report = await bob.sync({ onConflict: resolver });
+    expect(seen).toEqual([]);
+    expect(report.convergent).toBe(1);
     expect(readKV(bob)).toEqual({});
 
     master.close();

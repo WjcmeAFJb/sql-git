@@ -27,7 +27,7 @@ async function syncerSync(hosts: string[]): Promise<void> {
 async function seedMaster(root: string): Promise<void> {
   const mod = await import("../src/index.ts");
   const { bankActions } = await import("../demo/actions.ts");
-  const s = mod.Store.open({ root, peerId: "master", masterId: "master", actions: bankActions });
+  const s = await mod.Store.open({ root, peerId: "master", masterId: "master", actions: bankActions });
   try {
     s.submit("init_bank", {});
     s.submit("create_account", { id: "checking", name: "Checking", ts: "1970-01-01T00:00:00.000Z" });

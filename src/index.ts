@@ -3,6 +3,7 @@ export { FileSyncLagError } from "./file-sync.ts";
 export type {
   ActionFn,
   ActionRegistry,
+  ActionTrace,
   ConflictContext,
   ConflictKind,
   MasterActionEntry,
@@ -15,4 +16,5 @@ export type {
   SyncOptions,
   SyncReport,
 } from "./types.ts";
-export { compareDbs } from "./db.ts";
+export { compareDbs, initSql, type Db } from "./db.ts";
+export { tracesConflict } from "./conflict.ts";

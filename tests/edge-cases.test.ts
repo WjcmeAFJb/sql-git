@@ -6,12 +6,12 @@ describe("edge cases", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     master.submit("set", { k: "m1", v: "mv1" });
     alice.submit("set", { k: "a", v: "av" });
@@ -39,13 +39,13 @@ describe("edge cases", () => {
   it("sync is idempotent: running it twice with no changes is a no-op", async () => {
     const root = makeRoot();
     const actions = buildActions();
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
     const r = await master.sync();
     expect(r).toEqual({ applied: 0, skipped: 0, dropped: 0, forced: 0 });
 
-    const alice = openStore(root, "alice", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
     alice.submit("set", { k: "a", v: "1" });
     await master.sync();
     const a1 = await alice.sync();
@@ -62,10 +62,10 @@ describe("edge cases", () => {
     const actions = buildActions();
 
     {
-      const master = openStore(root, "master", "master", actions);
+      const master = await openStore(root, "master", "master", actions);
       master.submit(INIT_SCHEMA, {});
       master.submit("set", { k: "persist", v: "yes" });
-      const alice = openStore(root, "alice", "master", actions);
+      const alice = await openStore(root, "alice", "master", actions);
       alice.submit("inc", { by: 7 });
       await master.sync();
       await alice.sync();
@@ -76,14 +76,14 @@ describe("edge cases", () => {
 
     // Re-open — snapshot should contain the persisted state, and nextMasterSeq should
     // continue correctly so new submits don't collide with squashed seqs.
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     expect(readKV(master)).toEqual({ persist: "yes" });
     master.submit("set", { k: "after-reopen", v: "1" });
     await master.sync();
     expect(readKV(master)).toEqual({ persist: "yes", "after-reopen": "1" });
 
     // Alice also reopens and catches up.
-    const alice = openStore(root, "alice", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
     expect(readKV(alice)).toEqual({ persist: "yes", "after-reopen": "1" });
 
     master.close();
@@ -91,10 +91,10 @@ describe("edge cases", () => {
   });
 
   it("DB comparison detects row-content differences", async () => {
-    const { compareDbs } = await import("../src/db.ts");
-    const { default: Database } = await import("better-sqlite3");
-    const a = new Database(":memory:");
-    const b = new Database(":memory:");
+    const { compareDbs, initSql, openMemoryDb } = await import("../src/db.ts");
+    await initSql();
+    const a = openMemoryDb();
+    const b = openMemoryDb();
     a.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
     b.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
     a.prepare("INSERT INTO t VALUES (1, 'x')").run();
@@ -109,10 +109,10 @@ describe("edge cases", () => {
   });
 
   it("DB comparison ignores insertion-order differences for unordered tables", async () => {
-    const { compareDbs } = await import("../src/db.ts");
-    const { default: Database } = await import("better-sqlite3");
-    const a = new Database(":memory:");
-    const b = new Database(":memory:");
+    const { compareDbs, initSql, openMemoryDb } = await import("../src/db.ts");
+    await initSql();
+    const a = openMemoryDb();
+    const b = openMemoryDb();
     a.exec("CREATE TABLE t (k TEXT, v TEXT)");
     b.exec("CREATE TABLE t (k TEXT, v TEXT)");
     a.prepare("INSERT INTO t VALUES ('a', '1')").run();
@@ -128,12 +128,12 @@ describe("edge cases", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     alice.submit("set", { k: "x", v: "alice" });
     bob.submit("set", { k: "x", v: "bob" });

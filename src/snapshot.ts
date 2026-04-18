@@ -1,27 +1,22 @@
-import Database from "better-sqlite3";
-import type { Database as Db } from "better-sqlite3";
-import { existsSync, writeFileSync, renameSync } from "node:fs";
-import { initMeta } from "./db.ts";
+import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { Db, loadDbFromBytes, openMemoryDb } from "./db.ts";
+
+/*
+ * snapshot.db on disk is a small JSON document: schema + rows + sequences.
+ * The WASM SQLite build doesn't ship `sqlite3_serialize`, so we round-trip
+ * via the structural dump we already needed for `compareDbs`.
+ */
 
 export function loadSnapshotToMemory(snapshotFile: string): Db {
-  if (!existsSync(snapshotFile)) {
-    const mem = new Database(":memory:");
-    mem.pragma("foreign_keys = ON");
-    initMeta(mem);
-    return mem;
-  }
-  const fileDb = new Database(snapshotFile, { readonly: true });
-  const buf = fileDb.serialize();
-  fileDb.close();
-  const mem = new Database(buf);
-  mem.pragma("foreign_keys = ON");
-  initMeta(mem);
-  return mem;
+  if (!existsSync(snapshotFile)) return openMemoryDb();
+  const bytes = readFileSync(snapshotFile);
+  if (bytes.length === 0) return openMemoryDb();
+  return loadDbFromBytes(bytes);
 }
 
 export function saveDbToFile(db: Db, path: string): void {
-  const buf = db.serialize();
+  const bytes = db.serialize();
   const tmp = path + ".tmp";
-  writeFileSync(tmp, buf);
+  writeFileSync(tmp, bytes);
   renameSync(tmp, path);
 }

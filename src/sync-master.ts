@@ -1,4 +1,4 @@
-import type { Database as Db } from "better-sqlite3";
+import type { Db } from "./db.ts";
 import { appendEntry, readLog, rewriteLog } from "./log.ts";
 import { peerLogPath, snapshotPath } from "./paths.ts";
 import { loadSnapshotToMemory, saveDbToFile } from "./snapshot.ts";
@@ -154,7 +154,7 @@ export function runMasterSync(store: Store): SyncReport {
         );
         conflict = interleavedFromOthers
           ? { ok: false, kind: "non_commutative" }
-          : { ok: true };
+          : { ok: true, reason: "disjoint" };
       } else {
         // Relaxed commutativity: same-peer entries in the log since
         // `entry.baseMasterSeq` are treated as "intended prior context" for

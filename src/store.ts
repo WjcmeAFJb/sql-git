@@ -1,8 +1,7 @@
-import type { Database as Db } from "better-sqlite3";
 import { appendEntry, ensureDir, ensureFile, readLog } from "./log.ts";
 import { peerLogPath, peersDir, snapshotPath } from "./paths.ts";
 import { loadSnapshotToMemory } from "./snapshot.ts";
-import { getSnapshotHead } from "./db.ts";
+import { Db, getSnapshotHead, initSql } from "./db.ts";
 import { applyAction } from "./apply.ts";
 import { assertFilesConsistent } from "./file-sync.ts";
 import { runMasterSync } from "./sync-master.ts";
@@ -35,7 +34,7 @@ import type {
  * {@link Store.open} or {@link Store.sync} throws `FileSyncLagError` — the
  * caller should retry after the syncer settles.
  *
- * Lifecycle: `Store.open(...)` → `submit(...)` / `sync(...)` → `close()`.
+ * Lifecycle: `await Store.open(...)` → `submit(...)` / `sync(...)` → `close()`.
  */
 export class Store {
   /**
@@ -107,6 +106,9 @@ export class Store {
    * Open (or create) a peer at `opts.root`. The directory is created if it
    * doesn't exist; the peer's own log file is created empty if new.
    *
+   * Returns a promise because the underlying SQLite-WASM module is loaded
+   * lazily on first call (zero cost on subsequent calls).
+   *
    * On open, the local db is rebuilt from `snapshot.db` plus the applicable
    * log entries:
    * - master: applies every action in its own log (post-snapshot).
@@ -118,7 +120,8 @@ export class Store {
    *
    * All actions referenced in the logs must be present in `opts.actions`.
    */
-  static open(opts: StoreOptions): Store {
+  static async open(opts: StoreOptions): Promise<Store> {
+    await initSql();
     ensureDir(peersDir(opts.root));
     const db = loadSnapshotToMemory(snapshotPath(opts.root));
     const isMaster = opts.peerId === opts.masterId;

@@ -30,7 +30,7 @@ describe("file-sync robustness", () => {
     expect(readLog(p)).toEqual([]);
   });
 
-  it("peer open throws FileSyncLagError if master log declares a snapshot head the local snapshot.db hasn't caught up to", () => {
+  it("peer open throws FileSyncLagError if master log declares a snapshot head the local snapshot.db hasn't caught up to", async () => {
     const root = makeRoot();
     mkdirSync(peersDir(root), { recursive: true });
 
@@ -55,7 +55,7 @@ describe("file-sync robustness", () => {
     const actions = buildActions();
     let caught: unknown;
     try {
-      openStore(root, "alice", "master", actions);
+      await openStore(root, "alice", "master", actions);
     } catch (err) {
       caught = err;
     }
@@ -72,10 +72,10 @@ describe("file-sync robustness", () => {
     // delivery.
     const source = makeRoot();
     const actions = buildActions();
-    const master = openStore(source, "master", "master", actions);
+    const master = await openStore(source, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     master.submit("set", { k: "persistent", v: "yes" });
-    const alice = openStore(source, "alice", "master", actions);
+    const alice = await openStore(source, "alice", "master", actions);
     alice.submit("set", { k: "alice-key", v: "1" });
     await master.sync();
     await alice.sync();
@@ -88,12 +88,12 @@ describe("file-sync robustness", () => {
     // Phase 1: Syncthing has delivered only master.jsonl (with snapshot marker).
     copyFileSync(peerLogPath(source, "master"), peerLogPath(staleDest, "master"));
 
-    expect(() => openStore(staleDest, "alice", "master", actions)).toThrow(FileSyncLagError);
+    await expect(openStore(staleDest, "alice", "master", actions)).rejects.toBeInstanceOf(FileSyncLagError);
 
     // Phase 2: Syncthing catches up — snapshot.db arrives.
     copyFileSync(snapshotPath(source), snapshotPath(staleDest));
 
-    const alice2 = openStore(staleDest, "alice", "master", actions);
+    const alice2 = await openStore(staleDest, "alice", "master", actions);
     expect(readKV(alice2)).toEqual({ persistent: "yes", "alice-key": "1" });
     alice2.close();
   });
@@ -101,12 +101,12 @@ describe("file-sync robustness", () => {
   it("peer sync throws FileSyncLagError if a squash lands between open and sync (trimmed log arrives alone)", async () => {
     const root = makeRoot();
     const actions = buildActions();
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     master.submit("set", { k: "a", v: "1" });
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
     alice.submit("set", { k: "a-local", v: "x" });
 
     // Simulate: after alice opened, a squash happens externally on master's
@@ -136,11 +136,11 @@ describe("file-sync robustness", () => {
     // well-formed prefix.
     const root = makeRoot();
     const actions = buildActions();
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
 
     // Alice submits several actions; between them master reads her log.
     alice.submit("set", { k: "one", v: "1" });
@@ -163,10 +163,10 @@ describe("file-sync robustness", () => {
   it("atomic rename of snapshot.db: stale .tmp does not shadow the real snapshot", async () => {
     const root = makeRoot();
     const actions = buildActions();
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     master.submit("set", { k: "real", v: "1" });
-    const alice = openStore(root, "alice", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
     await master.sync();
     await alice.sync();
     await master.sync(); // squashes
@@ -180,7 +180,7 @@ describe("file-sync robustness", () => {
     master.close();
     alice.close();
 
-    const reopened = openStore(root, "alice", "master", actions);
+    const reopened = await openStore(root, "alice", "master", actions);
     expect(readKV(reopened)).toEqual({ real: "1" });
     reopened.close();
 
@@ -191,7 +191,7 @@ describe("file-sync robustness", () => {
   it("master can incorporate a peer log that arrived via Syncthing between two master.sync calls", async () => {
     const root = makeRoot();
     const actions = buildActions();
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 

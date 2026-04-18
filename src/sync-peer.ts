@@ -1,8 +1,8 @@
-import type { Database as Db } from "better-sqlite3";
+import type { Db } from "./db.ts";
 import { readLog, rewriteLog } from "./log.ts";
 import { peerLogPath, snapshotPath } from "./paths.ts";
 import { loadSnapshotToMemory } from "./snapshot.ts";
-import { getSnapshotHead } from "./db.ts";
+import { cloneDb, compareDbs, getSnapshotHead } from "./db.ts";
 import { applyAction } from "./apply.ts";
 import { checkConflict, type ConflictResult } from "./conflict.ts";
 import { assertFilesConsistent } from "./file-sync.ts";
@@ -16,6 +16,131 @@ import type {
   SyncOptions,
   SyncReport,
 } from "./types.ts";
+
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Trace each peer action on a fresh base clone, collect write-row keys,
+ * greedy-partition by overlap into chains, and test each chain: when the
+ * chain applied alone to `baseDb` leaves every row it touched identical
+ * to the corresponding row in `rebasedDb`, those actions converge — their
+ * net effect has already been realized by master, with or without mid-
+ * sequence states that would otherwise error (e.g. edit_tx_amount on a
+ * row master has already deleted).
+ *
+ * Returns indices into `unincorporated` whose enclosing chain converges.
+ * An index not in the returned set falls through to per-action checks.
+ */
+function findConvergentChains(
+  baseDb: Db,
+  rebasedDb: Db,
+  actions: Store["actions"],
+  unincorporated: PeerActionEntry[],
+): Set<number> {
+  // Trace each action on a running simulation to get its write set.
+  const sim = cloneDb(baseDb);
+  const writesPerAction: Set<string>[] = [];
+  let simOk = true;
+  for (const action of unincorporated) {
+    sim.beginTracking();
+    try {
+      applyAction(sim, actions, action.name, action.params);
+    } catch {
+      simOk = false;
+    }
+    const writes = sim.getWriteLog();
+    sim.endTracking();
+    const keys = new Set<string>();
+    for (const w of writes) {
+      if (w.op === "truncate") {
+        keys.add(`${w.table}:*`);
+      } else {
+        keys.add(`${w.table}:${String(w.rowid)}`);
+      }
+    }
+    writesPerAction.push(keys);
+    if (!simOk) break;
+  }
+  sim.close();
+  if (!simOk) return new Set();
+
+  // Greedy chain boundaries: consecutive actions share at least one written row.
+  type Chain = { start: number; end: number; writes: Set<string> };
+  const chains: Chain[] = [];
+  let cur: Chain | null = null;
+  for (let i = 0; i < unincorporated.length; i++) {
+    const w = writesPerAction[i];
+    if (!cur) {
+      cur = { start: i, end: i, writes: new Set(w) };
+      continue;
+    }
+    let overlaps = false;
+    for (const k of w) {
+      if (cur.writes.has(k)) {
+        overlaps = true;
+        break;
+      }
+    }
+    if (overlaps) {
+      cur.end = i;
+      for (const k of w) cur.writes.add(k);
+    } else {
+      chains.push(cur);
+      cur = { start: i, end: i, writes: new Set(w) };
+    }
+  }
+  if (cur) chains.push(cur);
+
+  const absorbed = new Set<number>();
+  for (const chain of chains) {
+    const probe = cloneDb(baseDb);
+    let applyOk = true;
+    try {
+      for (let i = chain.start; i <= chain.end; i++) {
+        applyAction(probe, actions, unincorporated[i].name, unincorporated[i].params);
+      }
+    } catch {
+      applyOk = false;
+    }
+    if (applyOk && rowsetMatches(probe, rebasedDb, chain.writes)) {
+      for (let i = chain.start; i <= chain.end; i++) absorbed.add(i);
+    }
+    probe.close();
+  }
+  return absorbed;
+}
+
+/**
+ * True iff every `(table, rowid)` in `rowKeys` holds the same row contents
+ * in both databases (absent in both also counts as equal). Table-wildcard
+ * keys (`table:*` from truncates) require the full table contents to match.
+ */
+function rowsetMatches(a: Db, b: Db, rowKeys: Set<string>): boolean {
+  for (const key of rowKeys) {
+    const sep = key.lastIndexOf(":");
+    const table = key.slice(0, sep);
+    const rowid = key.slice(sep + 1);
+    const qt = quoteIdent(table);
+    if (rowid === "*") {
+      const rowsA = JSON.stringify(
+        a.prepare(`SELECT * FROM ${qt} ORDER BY rowid`).all(),
+      );
+      const rowsB = JSON.stringify(
+        b.prepare(`SELECT * FROM ${qt} ORDER BY rowid`).all(),
+      );
+      if (rowsA !== rowsB) return false;
+      continue;
+    }
+    const aRow = a.prepare(`SELECT * FROM ${qt} WHERE rowid = ?`).get(rowid);
+    const bRow = b.prepare(`SELECT * FROM ${qt} WHERE rowid = ?`).get(rowid);
+    if (aRow === undefined && bRow === undefined) continue;
+    if (aRow === undefined || bRow === undefined) return false;
+    if (JSON.stringify(aRow) !== JSON.stringify(bRow)) return false;
+  }
+  return true;
+}
 
 function buildMasterState(
   masterLog: MasterLogEntry[],
@@ -82,10 +207,86 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
     (e): e is PeerActionEntry => e.kind === "action",
   );
 
+  // Convergence pre-checks: skip the per-action loop for actions whose
+  // intent has already been realized by master.
+  //
+  //   (1) Global: if applying EVERY unincorporated peer action on top of the
+  //       appropriate base produces exactly the rebased master state, the
+  //       peer's entire suffix is subsumed. Drop and acknowledge.
+  //   (2) Chain: partition the peer's unincorporated actions by write-set
+  //       overlap (consecutive actions whose writes intersect form one
+  //       chain — e.g. an `edit_tx_amount` followed by a `delete_transaction`
+  //       on the same row). For each chain, if applying it on a fresh base
+  //       leaves the chain's touched rows identical to the rebased master
+  //       state, that chain converges — drop those actions silently.
+  //
+  // What remains goes through the per-action loop, so genuine conflicts
+  // still surface to the resolver one at a time.
+  const unincorporated = ownActions.filter((a) => !incorporated.has(a.seq));
+  const absorbedSeqs = new Set<number>();
+  if (unincorporated.length > 0) {
+    let firstBase = unincorporated[0].baseMasterSeq;
+    for (const a of unincorporated) {
+      if (a.baseMasterSeq < firstBase) firstBase = a.baseMasterSeq;
+    }
+    const probeBuild = buildMasterState(
+      masterLog,
+      snapshotPath(store.root),
+      firstBase,
+      store.actions,
+      store.peerId,
+    );
+    let probeOk = true;
+    try {
+      for (const a of unincorporated) {
+        applyAction(probeBuild.db, store.actions, a.name, a.params);
+      }
+    } catch {
+      probeOk = false;
+    }
+    if (probeOk && compareDbs(probeBuild.db, rebasedDb)) {
+      probeBuild.db.close();
+      const newLog: PeerLogEntry[] = [{ kind: "master_ack", masterSeq: newMasterHead }];
+      store.peerLog = newLog;
+      rewriteLog(peerLogPath(store.root, store.peerId), newLog);
+      const old = store.db;
+      store.db = rebasedDb;
+      store.currentMasterSeq = newMasterHead;
+      try {
+        old.close();
+      } catch {
+        /* already closed */
+      }
+      report.convergent = unincorporated.length;
+      return report;
+    }
+    probeBuild.db.close();
+
+    // Chain-based: trace each action's writes, group by overlap, absorb
+    // convergent chains. Remaining fall through to the per-action loop.
+    const chainBaseBuild = buildMasterState(
+      masterLog,
+      snapshotPath(store.root),
+      firstBase,
+      store.actions,
+      store.peerId,
+    );
+    const absorbedIdxs = findConvergentChains(
+      chainBaseBuild.db,
+      rebasedDb,
+      store.actions,
+      unincorporated,
+    );
+    chainBaseBuild.db.close();
+    for (const idx of absorbedIdxs) absorbedSeqs.add(unincorporated[idx].seq);
+    if (absorbedSeqs.size > 0) report.convergent = absorbedSeqs.size;
+  }
+
   const kept: PeerActionEntry[] = [];
 
   for (const origAction of ownActions) {
     if (incorporated.has(origAction.seq)) continue;
+    if (absorbedSeqs.has(origAction.seq)) continue;
 
     let action: PeerActionEntry = origAction;
 
@@ -121,7 +322,7 @@ export async function runPeerSync(store: Store, opts: SyncOptions): Promise<Sync
         );
         conflict = interleavedFromOthers
           ? { ok: false, kind: "non_commutative" }
-          : { ok: true };
+          : { ok: true, reason: "disjoint" };
       } else {
         conflict = checkConflict({
           currentDb: rebasedDb,

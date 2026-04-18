@@ -7,13 +7,13 @@ describe("three peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     master.submit("inc", { by: 1 });
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     alice.submit("inc", { by: 10 });
     bob.submit("inc", { by: 100 });
@@ -40,18 +40,18 @@ describe("three peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     master.submit("set", { k: "seed", v: "0" });
 
     // Create bob's log file so master knows he exists, but then "offline" him
     // by not syncing him after initial creation.
-    const bob = openStore(root, "bob", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
     bob.close();
 
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
     alice.submit("set", { k: "a", v: "alice-val" });
     await master.sync();
     await alice.sync();
@@ -61,7 +61,7 @@ describe("three peers", () => {
     expect(m.squashedTo).toBeUndefined();
 
     // Bob comes back online — opens, sees current state, acks.
-    const bob2 = openStore(root, "bob", "master", actions);
+    const bob2 = await openStore(root, "bob", "master", actions);
     expect(readKV(bob2)).toEqual({ seed: "0", a: "alice-val" });
     await bob2.sync();
 
@@ -78,12 +78,12 @@ describe("three peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     alice.submit("set", { k: "x", v: "alice" });
     bob.submit("set", { k: "x", v: "bob" });
@@ -109,12 +109,12 @@ describe("three peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     alice.submit("set", { k: "x", v: "alice" });
     bob.submit("set", { k: "x", v: "bob" });
@@ -155,17 +155,17 @@ describe("three peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
     // Alice creates a record.
     alice.submit("insertOnce", { k: "doc1", v: "draft" });
     await alice.sync(); // nothing to rebase yet, but writes ack
     await master.sync(); // master picks up alice's action
 
-    const bob = openStore(root, "bob", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
     // Bob sees alice's record (via auto-catch-up) and updates it.
     expect(readKV(bob)).toEqual({ doc1: "draft" });
     bob.submit("set", { k: "doc1", v: "published" });
@@ -186,12 +186,12 @@ describe("three peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     // Alice races to insert the key.
     alice.submit("insertOnce", { k: "only", v: "alice" });
@@ -231,13 +231,13 @@ describe("three peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     master.submit("set", { k: "row", v: "1" });
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
     expect(readKV(alice)).toEqual({ row: "1" });
     expect(readKV(bob)).toEqual({ row: "1" });
 
@@ -298,12 +298,12 @@ describe("three peers", () => {
     const root = makeRoot();
     const actions = buildActions();
 
-    const master = openStore(root, "master", "master", actions);
+    const master = await openStore(root, "master", "master", actions);
     master.submit(INIT_SCHEMA, {});
     await master.sync();
 
-    const alice = openStore(root, "alice", "master", actions);
-    const bob = openStore(root, "bob", "master", actions);
+    const alice = await openStore(root, "alice", "master", actions);
+    const bob = await openStore(root, "bob", "master", actions);
 
     alice.submit("set", { k: "shared", v: "alice" });
     bob.submit("set", { k: "shared", v: "bob" });

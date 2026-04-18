@@ -1,4 +1,10 @@
-import type { Database } from "better-sqlite3";
+import type { Db } from "./db.ts";
+import type {
+  IndexWriteLogEntry,
+  PredicateLogEntry,
+  ReadLogEntry,
+  WriteLogEntry,
+} from "sqlite3-read-tracking";
 
 /**
  * An action: a deterministic, effectively-pure function of `(db, params)` that
@@ -8,13 +14,25 @@ import type { Database } from "better-sqlite3";
  * Actions must be deterministic — no wall-clock reads, randomness, or external
  * I/O. `params` is persisted to the log as JSON and replayed on every peer.
  */
-export type ActionFn = (db: Database, params: unknown) => void;
+export type ActionFn = (db: Db, params: unknown) => void;
 
 /** Map from action name to its implementation. Must agree across peers. */
 export type ActionRegistry = Record<string, ActionFn>;
 
 /** `{peer, seq}` back-reference identifying the original author of an action. */
 export type Source = { peer: string; seq: number };
+
+/**
+ * VDBE-level read/write trace captured while applying one action. Used by the
+ * conflict detector to cluster causally-related actions and skip the expensive
+ * permutation check on disjoint peer/master suffixes.
+ */
+export type ActionTrace = {
+  reads: ReadLogEntry[];
+  writes: WriteLogEntry[];
+  predicates: PredicateLogEntry[];
+  idxWrites: IndexWriteLogEntry[];
+};
 
 /**
  * A non-master peer's proposed action (entry in `peers/<peerId>.jsonl`).
@@ -110,9 +128,9 @@ export type ConflictContext = {
   /** Master actions that happened after `action.baseMasterSeq`. */
   masterSuffix: MasterActionEntry[];
   /** Read-only db at `action.baseMasterSeq`. Do not mutate. */
-  baseDb: Database;
+  baseDb: Db;
   /** Read-only db at the new master head. Do not mutate. */
-  rebasedDb: Database;
+  rebasedDb: Db;
   /**
    * Queue a new peer action to be committed before the current one retries.
    * Applied immediately to the rebased working db; persisted into the peer's
@@ -164,6 +182,9 @@ export type SyncOptions = {
  * - `dropped`: peer actions the resolver elected to drop.
  * - `forced`: peer actions marked forced this round (for master: how many
  *   forces were accepted; for peer: how many the resolver forced).
+ * - `convergent`: peer actions that the conflict detector accepted as
+ *   non-conflicting because both branch orderings reached the same final
+ *   state (even though their read/write sets overlapped).
  * - `squashedTo`: master-only — the master seq the snapshot was advanced to.
  */
 export type SyncReport = {
@@ -171,5 +192,6 @@ export type SyncReport = {
   skipped: number;
   dropped: number;
   forced: number;
+  convergent?: number;
   squashedTo?: number;
 };
