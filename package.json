@@ -2,12 +2,40 @@
   "name": "sql-git",
   "version": "0.1.0",
   "description": "Distributed SQLite storage with per-peer logs, master squashing, and rebase-style conflict resolution.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WjcmeAFJb/sql-git.git"
+  },
+  "homepage": "https://WjcmeAFJb.github.io/sql-git/",
+  "keywords": [
+    "sqlite",
+    "distributed",
+    "offline-first",
+    "crdt",
+    "opfs",
+    "syncthing",
+    "action-log",
+    "rebase",
+    "conflict-resolution"
+  ],
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./fs-node": "./src/fs-node.ts",
+    "./fs-opfs": "./src/fs-opfs.ts",
+    "./fs": "./src/fs.ts"
   },
+  "files": [
+    "src",
+    "demo/actions.ts",
+    "demo/app.tsx",
+    "demo/tracker.tsx",
+    "demo/syncer.ts",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",

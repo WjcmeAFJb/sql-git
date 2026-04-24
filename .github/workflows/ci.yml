@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test & typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout sql-git
+        uses: actions/checkout@v4
+        with:
+          path: sql-git
+
+      # The demo-opfs2 demo depends on `sql-reactive-orm` via `file:` —
+      # clone the sibling into the expected path so pnpm can resolve it.
+      - name: Checkout sql-reactive-orm sibling
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sql-reactive-orm
+          path: sql-reactive-orm
+          # If the sibling isn't set up yet, this step fails. Swap to
+          # `continue-on-error: true` temporarily while bootstrapping.
+
+      - name: Checkout sql-read-tracking sibling
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sql-read-tracking
+          path: sql-read-tracking
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: sql-git/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: sql-git
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: sql-git
+        run: pnpm typecheck
+
+      - name: Unit tests
+        working-directory: sql-git
+        run: pnpm test
+
+      - name: Install Playwright browsers for demo e2e
+        working-directory: sql-git/demo-opfs2
+        run: pnpm exec playwright install chromium --with-deps
+
+      - name: Demo-opfs2 e2e (Playwright)
+        working-directory: sql-git/demo-opfs2
+        run: pnpm test:e2e
