@@ -150,15 +150,27 @@ export function SqlConsole({
       </div>
 
       {isMutation ? (
-        <Alert variant="info" className="mx-3 mb-2 flex items-start gap-1.5 text-[11px]">
-          <Info className="mt-0.5 h-3 w-3 shrink-0" />
-          <span>
-            Writes are submitted as an{" "}
-            <code className="rounded bg-muted px-1">exec_sql</code> action — logged, rebased, and
-            replicated to every peer like a built-in action. The statement must be deterministic
-            (avoid <code>RANDOM()</code>, <code>datetime('now')</code>, etc.).
-          </span>
-        </Alert>
+        // Padded wrapper instead of mx-3 on the Alert — Alert's variants
+        // set `w-full`, and margin-x on a 100%-wide box overflows the
+        // fixed-width console (parent width = 100% + mx → 100% + 24px).
+        // `min-w-0 break-words` on the inner span lets long unbreakable
+        // tokens (`datetime('now')`, `RANDOM()`) wrap inside the alert
+        // instead of pushing the layout sideways.
+        <div className="px-3 pb-2">
+          <Alert
+            variant="info"
+            className="flex items-start gap-1.5 text-[11px]"
+          >
+            <Info className="mt-0.5 h-3 w-3 shrink-0" />
+            <span className="min-w-0 break-words">
+              Writes are submitted as an{" "}
+              <code className="rounded bg-muted px-1">exec_sql</code> action — logged,
+              rebased, and replicated to every peer like a built-in action. The statement
+              must be deterministic (avoid <code>RANDOM()</code>,{" "}
+              <code>datetime('now')</code>, etc.).
+            </span>
+          </Alert>
+        </div>
       ) : null}
 
       <ResultView result={result} />

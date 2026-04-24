@@ -99,6 +99,44 @@ export function createOpfsFs(): OpfsFs {
   let rootHandle: FileSystemDirectoryHandle | null = null;
   let channel: BroadcastChannel | null = null;
 
+  /**
+   * Per-path write mutex.
+   *
+   * OPFS doesn't provide an atomic append primitive — our `appendFile` is
+   * a read + compose + writeFile, and `writeFile` itself opens a fresh
+   * writable that truncates on close. If two mutating operations on the
+   * same path overlap — which happens readily when sql-git's `Store.submit`
+   * yields mid-`await appendEntry` and an unrelated React effect kicks
+   * off another submit before the first's write commits — the second
+   * writer reads stale bytes and clobbers the first's changes on close.
+   *
+   * Serialising per-path is enough: different files never contend, and
+   * the coarse single-writer invariant (master only writes snapshot.db,
+   * peer X only writes peer/X.jsonl) means we don't need cross-file
+   * coordination at this layer.
+   */
+  const locks = new Map<string, Promise<void>>();
+  const withLock = async <T>(
+    key: string,
+    fn: () => Promise<T>,
+  ): Promise<T> => {
+    const prev = locks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((r) => {
+      release = r;
+    });
+    locks.set(key, prev.then(() => current));
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+      // Free the map entry once the tail of the chain has drained so we
+      // don't keep stale Promises alive indefinitely.
+      if (locks.get(key) === prev.then(() => current)) locks.delete(key);
+    }
+  };
+
   const requireRoot = (): FileSystemDirectoryHandle => {
     if (!rootHandle) throw new Error("OPFS adapter not initialized — call init() first");
     return rootHandle;
@@ -167,33 +205,47 @@ export function createOpfsFs(): OpfsFs {
     },
     async writeFile(p, d) {
       const np = normalize(p);
-      const { dir, name } = splitLeaf(np);
-      const parent = await walkToDir(dir, true);
-      if (!parent) throw new Error(`EINVAL: ${np}`);
-      const fh = await parent.getFileHandle(name, { create: true });
-      const writable = await (fh as unknown as WritableHandle).createWritable();
-      // Hand Uint8Array over as a standalone ArrayBuffer — `createWritable`'s
-      // input types only accept `ArrayBuffer` (not `ArrayBufferLike`), and
-      // `.slice()` gives us an isolated copy that won't mutate under us.
-      const payload: BufferSource | string =
-        typeof d === "string" ? d : d.slice().buffer;
-      await writable.write(payload);
-      await writable.close();
+      await withLock(np, async () => {
+        const { dir, name } = splitLeaf(np);
+        const parent = await walkToDir(dir, true);
+        if (!parent) throw new Error(`EINVAL: ${np}`);
+        const fh = await parent.getFileHandle(name, { create: true });
+        const writable = await (fh as unknown as WritableHandle).createWritable();
+        // Hand Uint8Array over as a standalone ArrayBuffer — `createWritable`'s
+        // input types only accept `ArrayBuffer` (not `ArrayBufferLike`), and
+        // `.slice()` gives us an isolated copy that won't mutate under us.
+        const payload: BufferSource | string =
+          typeof d === "string" ? d : d.slice().buffer;
+        await writable.write(payload);
+        await writable.close();
+      });
       emit({ type: "write", path: np });
     },
     async appendFile(p, d) {
       const np = normalize(p);
-      let existing: Uint8Array;
-      try {
-        existing = await fsAdapter.readFile(np);
-      } catch {
-        existing = new Uint8Array(0);
-      }
-      const add = encoder.encode(d);
-      const combined = new Uint8Array(existing.length + add.length);
-      combined.set(existing, 0);
-      combined.set(add, existing.length);
-      await fsAdapter.writeFile(np, combined);
+      await withLock(np, async () => {
+        const { dir, name } = splitLeaf(np);
+        const parent = await walkToDir(dir, true);
+        if (!parent) throw new Error(`EINVAL: ${np}`);
+        const fh = await parent.getFileHandle(name, { create: true });
+        // Read current bytes through the freshly-resolved handle so we
+        // always see whatever committed just before we took the lock.
+        let existing = new Uint8Array(0);
+        try {
+          const file = await fh.getFile();
+          existing = new Uint8Array(await file.arrayBuffer());
+        } catch {
+          /* new file: leave existing as 0 bytes */
+        }
+        const add = encoder.encode(d);
+        const combined = new Uint8Array(existing.length + add.length);
+        combined.set(existing, 0);
+        combined.set(add, existing.length);
+        const writable = await (fh as unknown as WritableHandle).createWritable();
+        await writable.write(combined.slice().buffer);
+        await writable.close();
+      });
+      emit({ type: "write", path: np });
     },
     async exists(p) {
       const np = normalize(p);

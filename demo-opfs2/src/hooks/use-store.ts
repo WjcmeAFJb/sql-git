@@ -212,17 +212,22 @@ export function useStore(peerId: string | null): UseStore {
         setHead(s.currentMasterSeq);
 
         // Master auto-initialises the bank schema if this is a fresh dir.
-        if (isMaster) {
+        // We re-check `cancelled` around the submit: StrictMode dev runs
+        // effects twice, and the first run's async IIFE keeps going even
+        // after cleanup sets cancelled=true.
+        if (isMaster && !cancelled) {
           const hasTable = s.db
             .prepare(
               "SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'",
             )
             .get();
-          if (!hasTable) {
+          if (!hasTable && !cancelled) {
             await s.submit("init_bank", {});
+            if (cancelled) return;
             setHead(s.currentMasterSeq);
           }
         }
+        if (cancelled) return;
 
         setStatus({
           kind: "success",
