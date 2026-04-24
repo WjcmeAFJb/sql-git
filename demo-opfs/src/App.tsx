@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-const ROOT_NAME = "opfs-demo";
+const ROOT_NAME = "demo-opfs2";
 
 type Entry = { name: string; path: string; kind: "file" | "dir" };
 

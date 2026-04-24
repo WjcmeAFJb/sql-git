@@ -190,4 +190,21 @@ export const bankActions: ActionRegistry = {
     const r = db.prepare("DELETE FROM transactions WHERE id = ?").run(id);
     if (r.changes === 0) throw new Error(`delete_transaction: no tx '${id}'`);
   },
+
+  // ─── ad-hoc SQL escape hatch ──────────────────────────────────────────
+  // Runs an arbitrary SQL statement inside the replicated action log, so
+  // writes issued from the in-browser SQL console are deterministic across
+  // peers and participate in conflict detection the same way purpose-built
+  // actions do. Callers must ensure the statement is deterministic — no
+  // `RANDOM()`, `datetime('now')`, or other non-pure functions, or the
+  // replay on other peers diverges. `sqlite3-read-tracking` captures the
+  // read/write sets of each statement at the VDBE layer, so the conflict
+  // detector handles this action no differently than any hand-written one.
+  exec_sql: (db, p) => {
+    const { sql } = p as { sql: string };
+    if (typeof sql !== "string" || !sql.trim()) {
+      throw new Error("exec_sql: 'sql' must be a non-empty string");
+    }
+    db.exec(sql);
+  },
 };
