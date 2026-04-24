@@ -7,8 +7,8 @@ The shortest path from zero to a two-peer replicated app on Node.
 ```bash
 mkdir notes-demo && cd notes-demo
 pnpm init
-pnpm add 'https://github.com/WjcmeAFJb/sql-git/releases/download/v0.1.0/sql-git-0.1.0.tgz' \
-        'https://github.com/WjcmeAFJb/sql-read-tracking/releases/download/v0.2.0/sqlite3-read-tracking-0.2.0.tgz'
+pnpm add 'https://github.com/WjcmeAFJb/sql-git/releases/download/v0.4.0/sql-git-0.4.0.tgz' \
+        'https://github.com/WjcmeAFJb/sql-read-tracking/releases/download/v0.2.1/sqlite3-read-tracking-0.2.1.tgz'
 ```
 
 Node ≥ 22.6 runs TypeScript directly via `--experimental-strip-types`.

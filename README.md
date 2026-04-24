@@ -43,13 +43,13 @@ sql-git isn't on npm yet. Install the release tarball straight from a
 GitHub release:
 
 ```bash
-pnpm add 'https://github.com/WjcmeAFJb/sql-git/releases/download/v0.1.0/sql-git-0.1.0.tgz'
+pnpm add 'https://github.com/WjcmeAFJb/sql-git/releases/download/v0.4.0/sql-git-0.4.0.tgz'
 ```
 
 Or pin to a tag in git:
 
 ```bash
-pnpm add 'github:WjcmeAFJb/sql-git#v0.1.0'
+pnpm add 'github:WjcmeAFJb/sql-git#v0.4.0'
 ```
 
 sql-git is shipped as TypeScript source (the exported entry is
@@ -59,7 +59,7 @@ sql-git is shipped as TypeScript source (the exported entry is
 You also need the SQLite build with read tracking installed alongside:
 
 ```bash
-pnpm add 'https://github.com/WjcmeAFJb/sql-read-tracking/releases/download/v0.2.0/sqlite3-read-tracking-0.2.0.tgz'
+pnpm add 'https://github.com/WjcmeAFJb/sql-read-tracking/releases/download/v0.2.1/sqlite3-read-tracking-0.2.1.tgz'
 ```
 
 ## Quickstart (Node)
