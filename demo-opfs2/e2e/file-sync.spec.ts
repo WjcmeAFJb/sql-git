@@ -4,19 +4,17 @@ import {
   pickSuggestedPeer,
   pickCustomPeer,
   newAccount,
-  openFileSync,
-  runFileSync,
-  closeFileSync,
+  openPeersMenu,
+  runPeersMenuSync,
+  closePeersMenu,
+  quickFileSync,
   waitSeedDone,
-  waitOpened,
-  expectGate,
-  clearStorage,
 } from "./helpers";
 
-test.describe("file-sync menu", () => {
+test.describe("peers menu (detailed file-sync)", () => {
   test("shows only current peer when no other dir exists", async ({ page }) => {
     await pickSuggestedPeer(page, "alice");
-    await openFileSync(page);
+    await openPeersMenu(page);
     await expect(page.getByText("Peer directories")).toBeVisible();
     // One card; labelled "this tab".
     await expect(page.getByText("this tab").first()).toBeVisible();
@@ -25,10 +23,10 @@ test.describe("file-sync menu", () => {
     await expect(
       page.locator('div[role=dialog] button:has-text("Sync")'),
     ).toBeDisabled();
-    await closeFileSync(page);
+    await closePeersMenu(page);
   });
 
-  test("master → peer: alice in one tab, bob in another, file-sync pulls schema", async ({
+  test("master → peer: alice in one tab, bob in another, quick file-sync pulls schema", async ({
     page,
     context,
   }) => {
@@ -53,21 +51,9 @@ test.describe("file-sync menu", () => {
       })
       .toBe(true);
 
-    // File-sync from bob's tab.
-    await bobTab
-      .getByRole("button", { name: "File-sync", exact: true })
-      .click();
-    await expect(bobTab.getByText("File-sync operations")).toBeVisible();
-    await expect(bobTab.getByText("Transfer plan")).toBeVisible();
-    await bobTab
-      .locator('div[role=dialog] button:has-text("Sync")')
-      .last()
-      .click();
-    await expect(bobTab.getByText(/transferred/)).toBeVisible({ timeout: 30_000 });
-    await bobTab
-      .locator('div[role=dialog] button:has-text("Close")')
-      .first()
-      .click();
+    // Quick file-sync from bob's tab — runs the same transfer as the
+    // modal, but without opening the dialog first.
+    await quickFileSync(bobTab);
 
     // Bob's store re-syncs off the freshly-staged master log + snapshot.
     await expect(bobTab.getByText(/Transactions\s*\(\s*15\s*\)/)).toBeVisible({
@@ -85,15 +71,15 @@ test.describe("file-sync menu", () => {
     await page.locator('button:has-text("Switch")').click();
     await pickCustomPeer(page, "bob");
     // Initial sync bob ↔ alice copies alice's files to bob.
-    await openFileSync(page);
-    await runFileSync(page);
-    await closeFileSync(page);
+    await openPeersMenu(page);
+    await runPeersMenuSync(page);
+    await closePeersMenu(page);
 
     // Now ask for a second sync — snapshot.db on bob shouldn't propagate
     // back to alice. Since bob has newer snapshot.db (due to mtime bump
     // from the last copy), newest-wins would pick bob; the ownership rule
     // skips it.
-    await openFileSync(page);
+    await openPeersMenu(page);
     // The plan UI might now say "in sync" or show only legitimate transfers.
     // Either way, there should be NO aToB or bToA row that mentions
     // `/master/snapshot.db` being written back onto alice.
@@ -106,6 +92,6 @@ test.describe("file-sync menu", () => {
     } else {
       expect(planText).toMatch(/in sync|nothing to transfer/);
     }
-    await closeFileSync(page);
+    await closePeersMenu(page);
   });
 });

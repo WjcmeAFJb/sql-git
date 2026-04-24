@@ -6,6 +6,7 @@ import {
   newCategory,
   newIncome,
   newExpense,
+  quickFileSync,
 } from "./helpers";
 
 /**
@@ -34,16 +35,7 @@ async function setupConflict(
   await bob.goto("/");
   await bob.locator("#custom-peer").fill("bob");
   await bob.locator('button:has-text("Open")').click();
-  await bob.getByRole("button", { name: "File-sync", exact: true }).click();
-  await bob
-    .locator('div[role=dialog] button:has-text("Sync")')
-    .last()
-    .click();
-  await expect(bob.getByText(/transferred/)).toBeVisible({ timeout: 30_000 });
-  await bob
-    .locator('div[role=dialog] button:has-text("Close")')
-    .first()
-    .click();
+  await quickFileSync(bob);
   await expect(bob.getByText("Checking").first()).toBeVisible({
     timeout: 30_000,
   });
@@ -63,16 +55,7 @@ async function setupConflict(
 
   // First bob file-sync: pushes bob.jsonl to alice, alice auto-syncs and
   // `skipped`s bob's action. Alice also squashes + writes new master log.
-  await bob.getByRole("button", { name: "File-sync", exact: true }).click();
-  await bob
-    .locator('div[role=dialog] button:has-text("Sync")')
-    .last()
-    .click();
-  await expect(bob.getByText(/transferred/)).toBeVisible({ timeout: 30_000 });
-  await bob
-    .locator('div[role=dialog] button:has-text("Close")')
-    .first()
-    .click();
+  await quickFileSync(bob);
   // Wait for alice to finish her master-side sync.
   await expect
     .poll(async () => /skipped=1/.test(await page.innerText("body")), {
@@ -82,18 +65,7 @@ async function setupConflict(
 
   // Second bob file-sync: pulls alice's updated log + snapshot. Bob's
   // own auto-resync rebases his expense on balance=$20 → conflict.
-  await bob.getByRole("button", { name: "File-sync", exact: true }).click();
-  await bob
-    .locator('div[role=dialog] button:has-text("Sync")')
-    .last()
-    .click();
-  await expect(bob.getByText(/transferred|nothing to transfer/)).toBeVisible({
-    timeout: 30_000,
-  });
-  await bob
-    .locator('div[role=dialog] button:has-text("Close")')
-    .first()
-    .click();
+  await quickFileSync(bob);
 
   // Bob's conflict bar appears.
   await expect(bob.getByText(/kind: error/)).toBeVisible({ timeout: 30_000 });
@@ -144,7 +116,10 @@ test.describe("conflict bar", () => {
     await expect(bob.getByText(/kind: error/)).not.toBeVisible({
       timeout: 30_000,
     });
-    // Bob's pending expense is gone — no pending count visible.
-    await expect(bob.getByText(/pending/)).not.toBeVisible();
+    // Bob's pending expense is gone — the top-bar pending badge ("1 pending")
+    // disappears once the peer log is cleared.
+    await expect(bob.locator('text=/\\d+\\s*pending/i')).toHaveCount(0, {
+      timeout: 30_000,
+    });
   });
 });

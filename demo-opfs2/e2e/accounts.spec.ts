@@ -3,6 +3,7 @@ import {
   expect,
   pickSuggestedPeer,
   newAccount,
+  newCategory,
   renameAccount,
   deleteAccount,
   newIncome,
@@ -21,13 +22,13 @@ test.describe("accounts tab", () => {
     await expect(
       page.getByText(/No accounts yet/),
     ).toBeVisible();
-    // Rename and Delete are disabled when there are no accounts.
-    await expect(page.locator('button:has-text("Rename")')).toBeDisabled();
-    await expect(page.locator('button:has-text("Delete")')).toBeDisabled();
 
     await newAccount(page, "Checking");
     await expect(page.getByText(/Accounts\s*\(\s*1\s*\)/)).toBeVisible();
-    await expect(page.locator('button:has-text("Rename")')).toBeEnabled();
+    // Per-row rename/delete icons are present.
+    await expect(
+      page.locator('main ul > li button[title="Rename"]'),
+    ).toHaveCount(1);
 
     await renameAccount(page, "Checking", "Main");
     await expect
@@ -48,14 +49,7 @@ test.describe("accounts tab", () => {
     await newAccount(page, "Checking");
     // Balance starts at 0.
     expect(await readBalance(page, "Checking")).toBe(0);
-    // Need a category for income.
-    await openTab(page, "Categories");
-    await page.locator('button:has-text("New")').first().click();
-    await page.locator("#wizard-field").fill("Salary");
-    await page.locator('button:has-text("Next")').click();
-    await page.locator("#wizard-field").click();
-    await page.locator('div[role=option]:has-text("income")').click();
-    await page.locator('button:has-text("Submit")').click();
+    await newCategory(page, "Salary", "income");
 
     await newIncome(page, { amount: 500, account: "Checking", category: "Salary" });
     await expect
@@ -78,20 +72,15 @@ test.describe("accounts tab", () => {
   test("account with transactions cannot be deleted", async ({ page }) => {
     await newAccount(page, "Checking");
     await newIncome(page, { amount: 100, account: "Checking" });
-    // Try to delete — the sql-git action throws on FK violation; submit
-    // surfaces the error, form stays open.
-    await openTab(page, "Accounts");
-    await page.locator('button:has-text("Delete")').first().click();
-    await page.locator("#wizard-field").click();
-    await page.locator('div[role=option]:has-text("Checking")').click();
-    await page.locator('button:has-text("Submit")').click();
-    // Expect an error (FK / constraint / RESTRICT) to surface. It shows
-    // in both the wizard's error region and the top-bar alert, hence
-    // `.first()` to satisfy strict mode.
+    // The delete click accepts the confirm prompt but the sql-git action
+    // throws on the FK RESTRICT — the store surfaces the error in the
+    // top-bar status alert. The account row stays in the list.
+    await deleteAccount(page, "Checking");
     await expect(
       page.getByText(/FOREIGN KEY|constraint|RESTRICT/i).first(),
     ).toBeVisible();
-    // Cancel out of the form.
-    await page.locator('button:has-text("Cancel")').click();
+    await expect(
+      page.locator('ul >> li >> span.font-medium:has-text("Checking")'),
+    ).toHaveCount(1);
   });
 });

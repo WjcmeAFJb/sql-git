@@ -2,34 +2,22 @@ import { Pencil, Plus, Trash2, ArrowRight } from "lucide-react";
 import type { Account, Category, Transaction } from "../../../demo/actions";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 export function TransactionsTab({
   transactions,
   accounts,
   categories,
-  onNewKind,
+  onNew,
   onEdit,
   onDelete,
-  newOpen,
-  setNewOpen,
 }: {
   transactions: Transaction[];
   accounts: Account[];
   categories: Category[];
-  onNewKind: (kind: "income" | "expense" | "transfer") => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  newOpen: boolean;
-  setNewOpen: (v: boolean) => void;
+  onNew: () => void;
+  onEdit: (tx: Transaction) => void;
+  onDelete: (tx: Transaction) => void;
 }) {
   const accName = (id: string | null) =>
     id ? (accounts.find((a) => a.id === id)?.name ?? id) : "·";
@@ -44,22 +32,9 @@ export function TransactionsTab({
         <h2 className="text-sm font-semibold">
           Transactions <span className="text-muted-foreground">({transactions.length})</span>
         </h2>
-        <div className="flex items-center gap-1">
-          <Button size="sm" onClick={() => setNewOpen(true)}>
-            <Plus className="h-3 w-3" /> New
-          </Button>
-          <Button size="sm" variant="outline" onClick={onEdit} disabled={!transactions.length}>
-            <Pencil className="h-3 w-3" /> Edit
-          </Button>
-          <Button
-            size="sm"
-            variant="destructive"
-            onClick={onDelete}
-            disabled={!transactions.length}
-          >
-            <Trash2 className="h-3 w-3" /> Delete
-          </Button>
-        </div>
+        <Button size="sm" onClick={onNew}>
+          <Plus className="h-3 w-3" /> New
+        </Button>
       </div>
       {transactions.length === 0 ? (
         <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
@@ -104,53 +79,30 @@ export function TransactionsTab({
               <span className="ml-auto text-[10px] text-muted-foreground font-mono">
                 {t.id}
               </span>
+              <div className="flex items-center gap-0.5">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6"
+                  title="Edit"
+                  onClick={() => onEdit(t)}
+                >
+                  <Pencil className="h-3 w-3" />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6 hover:text-destructive"
+                  title="Delete"
+                  onClick={() => onDelete(t)}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </div>
             </li>
           ))}
         </ul>
       )}
-
-      <Dialog open={newOpen} onOpenChange={setNewOpen}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>New transaction</DialogTitle>
-            <DialogDescription>Pick the kind first.</DialogDescription>
-          </DialogHeader>
-          <div className="grid grid-cols-1 gap-2">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setNewOpen(false);
-                onNewKind("income");
-              }}
-            >
-              Income <span className="text-xs text-muted-foreground ml-2">cash in</span>
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setNewOpen(false);
-                onNewKind("expense");
-              }}
-            >
-              Expense <span className="text-xs text-muted-foreground ml-2">cash out</span>
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setNewOpen(false);
-                onNewKind("transfer");
-              }}
-            >
-              Transfer <span className="text-xs text-muted-foreground ml-2">acct → acct</span>
-            </Button>
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setNewOpen(false)}>
-              Cancel
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

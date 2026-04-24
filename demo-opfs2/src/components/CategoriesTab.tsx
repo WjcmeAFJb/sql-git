@@ -12,8 +12,8 @@ export function CategoriesTab({
 }: {
   categories: Category[];
   onNew: () => void;
-  onRename: () => void;
-  onDelete: () => void;
+  onRename: (category: Category) => void;
+  onDelete: (category: Category) => void;
 }) {
   return (
     <div className="space-y-3">
@@ -21,22 +21,9 @@ export function CategoriesTab({
         <h2 className="text-sm font-semibold">
           Categories <span className="text-muted-foreground">({categories.length})</span>
         </h2>
-        <div className="flex items-center gap-1">
-          <Button size="sm" onClick={onNew}>
-            <Plus className="h-3 w-3" /> New
-          </Button>
-          <Button size="sm" variant="outline" onClick={onRename} disabled={!categories.length}>
-            <Pencil className="h-3 w-3" /> Rename
-          </Button>
-          <Button
-            size="sm"
-            variant="destructive"
-            onClick={onDelete}
-            disabled={!categories.length}
-          >
-            <Trash2 className="h-3 w-3" /> Delete
-          </Button>
-        </div>
+        <Button size="sm" onClick={onNew}>
+          <Plus className="h-3 w-3" /> New
+        </Button>
       </div>
       {categories.length === 0 ? (
         <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
@@ -60,6 +47,26 @@ export function CategoriesTab({
               >
                 {c.kind}
               </span>
+              <div className="flex items-center gap-0.5">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6"
+                  title="Rename"
+                  onClick={() => onRename(c)}
+                >
+                  <Pencil className="h-3 w-3" />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6 hover:text-destructive"
+                  title="Delete"
+                  onClick={() => onDelete(c)}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </div>
             </li>
           ))}
         </ul>

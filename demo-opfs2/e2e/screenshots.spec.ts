@@ -4,7 +4,7 @@ import {
   pickSuggestedPeer,
   waitSeedDone,
   openSqlConsole,
-  openFileSync,
+  openPeersMenu,
   newAccount,
   newCategory,
   newIncome,
@@ -138,7 +138,7 @@ test.describe("screenshots", () => {
 
   test("file-sync menu", async ({ page }) => {
     await pickSuggestedPeer(page, "alice");
-    await openFileSync(page);
+    await openPeersMenu(page);
     await expect(page.getByText("Peer directories")).toBeVisible();
     await freezeDynamicContent(page);
     await expect(page).toHaveScreenshot("file-sync-menu.png", {

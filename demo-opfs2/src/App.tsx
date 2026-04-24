@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert } from "@/components/ui/alert";
 import { PeerGate, MASTER_ID, type PeerGateChoice } from "@/components/PeerGate";
@@ -7,7 +7,15 @@ import { BalanceStrip } from "@/components/BalanceStrip";
 import { AccountsTab } from "@/components/AccountsTab";
 import { CategoriesTab } from "@/components/CategoriesTab";
 import { TransactionsTab } from "@/components/TransactionsTab";
-import { Wizard, type FormSpec, unsentinelSelectValue } from "@/components/Wizard";
+import { FormDialog, type FormSpec } from "@/components/FormDialog";
+import {
+  NewTransactionDialog,
+  type NewTxValues,
+} from "@/components/NewTransactionDialog";
+import {
+  EditTransactionDialog,
+  type EditTxChanges,
+} from "@/components/EditTransactionDialog";
 import { ConflictBar } from "@/components/ConflictBar";
 import { SyncMenu } from "@/components/SyncMenu";
 import { HistorySidebar } from "@/components/HistorySidebar";
@@ -19,10 +27,19 @@ import { useWatcher } from "@/hooks/use-watcher";
 import { useMasterLog } from "@/hooks/use-action-log";
 import { useOrm } from "@/hooks/use-orm";
 import { useBankQuery } from "@/hooks/use-sql-query";
-import { listPeerDirs } from "@/lib/peer-dirs";
+import {
+  applySyncPlan,
+  diffPeers,
+  listPeerDirs,
+  listPeerFiles,
+} from "@/lib/peer-dirs";
 import { genId, nowTs } from "@/lib/id";
 import { seedBank } from "@/lib/seed";
-import type { AccountRow, CategoryRow, TransactionRow } from "@/lib/orm-entities";
+import type {
+  AccountRow,
+  CategoryRow,
+  TransactionRow,
+} from "@/lib/orm-entities";
 
 type Tab = "transactions" | "accounts" | "categories";
 
@@ -54,6 +71,7 @@ function App() {
     resolveConflict,
     sync,
     submit,
+    resetPeerDir,
     tick,
   } = useStore(peerId);
 
@@ -87,7 +105,13 @@ function App() {
   const [tab, setTab] = useState<Tab>("transactions");
   const [form, setForm] = useState<FormSpec | null>(null);
   const [newTxOpen, setNewTxOpen] = useState(false);
+  const [editTx, setEditTx] = useState<TransactionRow | null>(null);
   const [syncMenuOpen, setSyncMenuOpen] = useState(false);
+  const [fileSyncing, setFileSyncing] = useState(false);
+  const [fileSyncMsg, setFileSyncMsg] = useState<{
+    kind: "success" | "warning" | "error";
+    message: string;
+  } | null>(null);
 
   // All row reads go through the reactive ORM. The driver is backed by a
   // getter that returns `store.db` normally, or `conflict.ctx.rebasedDb`
@@ -150,335 +174,216 @@ function App() {
   // see it too after file-sync brings the master's log into their dir.
   const masterLog = useMasterLog(opfs, peerId ? `/${peerId}` : "", MASTER_ID, tick);
 
-  const accountOptions = accounts.map((a) => ({
-    label: `${a.name} (${a.id}) · $${a.balance}`,
-    value: a.id,
-  }));
-  const categoryOptions = useCallback(
-    (includeNone = true) => {
-      const opts = categories.map((c) => ({
-        label: `${c.name} [${c.kind}]`,
-        value: c.id,
-      }));
-      return includeNone ? [{ label: "— none —", value: "" }, ...opts] : opts;
-    },
-    [categories],
+  // ─── form builders (account + category CRUD only) ─────────────────────
+
+  const newAccountForm: FormSpec = useMemo(
+    () => ({
+      title: "New account",
+      description: "Display-name only — ID is auto-generated.",
+      submitLabel: "Create",
+      fields: [{ type: "text", key: "name", label: "Name", placeholder: "Checking" }],
+      onSubmit: async (v) => {
+        const id = genId("acc");
+        return submit("create_account", { id, name: v.name, ts: nowTs() });
+      },
+    }),
+    [submit],
   );
-  const txOptions = transactions.slice(-20).map((t) => ({
-    label: `${t.id} · ${t.kind} · $${t.amount}${t.memo ? " · " + t.memo.slice(0, 20) : ""}`,
-    value: t.id,
-  }));
 
-  // ─── form builders ─────────────────────────────────────────────────────
-
-  const newAccount: FormSpec = {
-    title: "New account",
-    description: "Display-name only — ID is auto-generated.",
-    fields: [{ type: "text", key: "name", label: "Name", placeholder: "Checking" }],
-    onSubmit: async (v) => {
-      const id = genId("acc");
-      return submit("create_account", { id, name: v.name, ts: nowTs() });
-    },
-  };
-
-  const renameAccount = (): FormSpec | null => {
-    if (accounts.length === 0) return null;
-    return {
-      title: "Rename account",
+  const newCategoryForm: FormSpec = useMemo(
+    () => ({
+      title: "New category",
+      submitLabel: "Create",
       fields: [
-        { type: "select", key: "id", label: "Account", options: accountOptions },
-        { type: "text", key: "name", label: "New name" },
-      ],
-      onSubmit: async (v) => {
-        const id = unsentinelSelectValue(v.id);
-        const acc = accounts.find((a) => a.id === id);
-        if (!acc) return "account not found";
-        if (v.name === acc.name) return "unchanged";
-        return submit("rename_account", { id, name: v.name });
-      },
-    };
-  };
-
-  const deleteAccount = (): FormSpec | null => {
-    if (accounts.length === 0) return null;
-    return {
-      title: "Delete account",
-      description: "Accounts with linked transactions can't be deleted.",
-      fields: [{ type: "select", key: "id", label: "Account", options: accountOptions }],
-      onSubmit: async (v) =>
-        submit("delete_account", { id: unsentinelSelectValue(v.id) }),
-    };
-  };
-
-  const newCategory: FormSpec = {
-    title: "New category",
-    fields: [
-      { type: "text", key: "name", label: "Name", placeholder: "Groceries" },
-      {
-        type: "select",
-        key: "kind",
-        label: "Kind",
-        options: [
-          { label: "income", value: "income" },
-          { label: "expense", value: "expense" },
-          { label: "both", value: "both" },
-        ],
-      },
-    ],
-    onSubmit: async (v) => {
-      const id = genId("cat");
-      return submit("create_category", {
-        id,
-        name: v.name,
-        kind: v.kind as "income" | "expense" | "both",
-        ts: nowTs(),
-      });
-    },
-  };
-
-  const renameCategory = (): FormSpec | null => {
-    if (categories.length === 0) return null;
-    return {
-      title: "Rename category",
-      fields: [
+        { type: "text", key: "name", label: "Name", placeholder: "Groceries" },
         {
           type: "select",
-          key: "id",
-          label: "Category",
-          options: categoryOptions(false),
-        },
-        { type: "text", key: "name", label: "New name" },
-      ],
-      onSubmit: async (v) => {
-        const id = unsentinelSelectValue(v.id);
-        const cat = categories.find((c) => c.id === id);
-        if (!cat) return "category not found";
-        if (v.name === cat.name) return "unchanged";
-        return submit("rename_category", { id, name: v.name });
-      },
-    };
-  };
-
-  const deleteCategory = (): FormSpec | null => {
-    if (categories.length === 0) return null;
-    return {
-      title: "Delete category",
-      fields: [
-        {
-          type: "select",
-          key: "id",
-          label: "Category",
-          options: categoryOptions(false),
+          key: "kind",
+          label: "Kind",
+          options: [
+            { label: "income", value: "income" },
+            { label: "expense", value: "expense" },
+            { label: "both", value: "both" },
+          ],
         },
       ],
-      onSubmit: async (v) =>
-        submit("delete_category", { id: unsentinelSelectValue(v.id) }),
-    };
-  };
-
-  const newTransaction = (kind: "income" | "expense" | "transfer"): FormSpec | null => {
-    if (kind === "transfer" && accounts.length < 2) return null;
-    if (kind !== "transfer" && accounts.length === 0) return null;
-    if (kind === "income") {
-      return {
-        title: "New income",
-        description: "Cash in: increases one account's balance.",
-        fields: [
-          { type: "number", key: "amount", label: "Amount", min: 1 },
-          {
-            type: "select",
-            key: "acc_to",
-            label: "Into account",
-            options: accountOptions,
-          },
-          {
-            type: "select",
-            key: "category_id",
-            label: "Category",
-            options: categoryOptions(true),
-          },
-          { type: "text", key: "memo", label: "Memo", optional: true },
-        ],
-        onSubmit: async (v) =>
-          submit("create_income", {
-            id: genId("inc"),
-            acc_to: unsentinelSelectValue(v.acc_to),
-            amount: Number(v.amount),
-            category_id: unsentinelSelectValue(v.category_id) || null,
-            memo: v.memo ?? "",
-            ts: nowTs(),
-          }),
-      };
-    }
-    if (kind === "expense") {
-      return {
-        title: "New expense",
-        description: "Cash out: deducts from one account. Balance can't go negative.",
-        fields: [
-          { type: "number", key: "amount", label: "Amount", min: 1 },
-          {
-            type: "select",
-            key: "acc_from",
-            label: "From account",
-            options: accountOptions,
-          },
-          {
-            type: "select",
-            key: "category_id",
-            label: "Category",
-            options: categoryOptions(true),
-          },
-          { type: "text", key: "memo", label: "Memo", optional: true },
-        ],
-        onSubmit: async (v) =>
-          submit("create_expense", {
-            id: genId("exp"),
-            acc_from: unsentinelSelectValue(v.acc_from),
-            amount: Number(v.amount),
-            category_id: unsentinelSelectValue(v.category_id) || null,
-            memo: v.memo ?? "",
-            ts: nowTs(),
-          }),
-      };
-    }
-    return {
-      title: "New transfer",
-      description: "Move funds between two of your accounts.",
-      fields: [
-        { type: "number", key: "amount", label: "Amount", min: 1 },
-        { type: "select", key: "acc_from", label: "From", options: accountOptions },
-        { type: "select", key: "acc_to", label: "To", options: accountOptions },
-        { type: "text", key: "memo", label: "Memo", optional: true },
-      ],
       onSubmit: async (v) => {
-        const from = unsentinelSelectValue(v.acc_from);
-        const to = unsentinelSelectValue(v.acc_to);
-        if (from === to) return "from and to must differ";
-        return submit("create_transfer", {
-          id: genId("tr"),
-          acc_from: from,
-          acc_to: to,
-          amount: Number(v.amount),
-          memo: v.memo ?? "",
+        const id = genId("cat");
+        return submit("create_category", {
+          id,
+          name: v.name,
+          kind: v.kind as "income" | "expense" | "both",
           ts: nowTs(),
         });
       },
-    };
-  };
+    }),
+    [submit],
+  );
 
-  const KEEP = "__keep__";
-  const editTx = (): FormSpec | null => {
-    if (transactions.length === 0) return null;
-    return {
-      title: "Edit transaction",
-      description: "Pick one, then walk through amount, memo, and category.",
-      fields: [{ type: "select", key: "id", label: "Transaction", options: txOptions }],
-      onSubmit: async (v) => {
-        const id = unsentinelSelectValue(v.id);
-        const tx = transactions.find((t) => t.id === id);
-        if (!tx) return "not found";
-        setTimeout(() => setForm(editTxFields(tx)), 0);
-        return null;
-      },
-    };
-  };
+  const renameAccountForm = (acc: AccountRow): FormSpec => ({
+    title: `Rename ${acc.name}`,
+    submitLabel: "Save",
+    fields: [{ type: "text", key: "name", label: "New name", initial: acc.name }],
+    onSubmit: async (v) => {
+      if (v.name === acc.name) return null;
+      return submit("rename_account", { id: acc.id, name: v.name });
+    },
+  });
 
-  const editTxFields = (tx: TransactionRow): FormSpec => {
-    const catOpts = [
-      { label: "— keep current —", value: KEEP },
-      { label: "— none —", value: "" },
-      ...categories.map((c) => ({ label: `${c.name} [${c.kind}]`, value: c.id })),
-    ];
-    return {
-      title: `Edit ${tx.id}`,
-      fields: [
-        {
-          type: "text",
-          key: "amount",
-          label: `Amount (current $${tx.amount}; blank = keep)`,
-          optional: true,
-        },
-        {
-          type: "text",
-          key: "memo",
-          label: tx.memo
-            ? `Memo (current: ${JSON.stringify(tx.memo)}; blank = keep)`
-            : "Memo (blank = keep empty)",
-          optional: true,
-        },
-        {
-          type: "select",
-          key: "category_id",
-          label: `Category (current: ${
-            tx.category_id
-              ? (categories.find((c) => c.id === tx.category_id)?.name ?? tx.category_id)
-              : "—"
-          })`,
-          options: catOpts,
-        },
-      ],
-      onSubmit: async (v) => {
-        const changes: string[] = [];
-        if (v.amount) {
-          const newAmount = Number(v.amount);
-          if (!Number.isFinite(newAmount) || newAmount <= 0) {
-            return "amount must be a positive number";
-          }
-          if (newAmount !== tx.amount) {
-            const err = await submit("edit_tx_amount", { id: tx.id, amount: newAmount });
-            if (err) return err;
-            changes.push("amount");
-          }
-        }
-        if (v.memo && v.memo !== tx.memo) {
-          const err = await submit("edit_tx_memo", { id: tx.id, memo: v.memo });
-          if (err) return err;
-          changes.push("memo");
-        }
-        const rawCat = unsentinelSelectValue(v.category_id);
-        if (rawCat !== KEEP) {
-          const newCat = rawCat || null;
-          if (newCat !== tx.category_id) {
-            const err = await submit("edit_tx_category", {
-              id: tx.id,
-              category_id: newCat,
-            });
-            if (err) return err;
-            changes.push("category");
-          }
-        }
-        return null;
-      },
-    };
-  };
+  const renameCategoryForm = (cat: CategoryRow): FormSpec => ({
+    title: `Rename ${cat.name}`,
+    submitLabel: "Save",
+    fields: [{ type: "text", key: "name", label: "New name", initial: cat.name }],
+    onSubmit: async (v) => {
+      if (v.name === cat.name) return null;
+      return submit("rename_category", { id: cat.id, name: v.name });
+    },
+  });
 
-  const deleteTx = (): FormSpec | null => {
-    if (transactions.length === 0) return null;
-    return {
-      title: "Delete transaction",
-      fields: [{ type: "select", key: "id", label: "Transaction", options: txOptions }],
-      onSubmit: async (v) =>
-        submit("delete_transaction", { id: unsentinelSelectValue(v.id) }),
-    };
-  };
+  // ─── transaction handlers ─────────────────────────────────────────────
 
-  const openForm = (f: FormSpec | null) => {
-    if (!f) return;
-    setForm(f);
-  };
-
-  const onNewTxKind = (kind: "income" | "expense" | "transfer") => {
-    const f = newTransaction(kind);
-    if (!f) {
-      alert(
-        kind === "transfer"
-          ? "need at least two accounts for a transfer"
-          : "create an account first",
-      );
-      return;
+  const onNewTxSubmit = async (v: NewTxValues): Promise<string | null> => {
+    if (v.kind === "income") {
+      return submit("create_income", {
+        id: genId("inc"),
+        acc_to: v.acc_to,
+        amount: v.amount,
+        category_id: v.category_id,
+        memo: v.memo ?? "",
+        ts: nowTs(),
+      });
     }
-    setForm(f);
+    if (v.kind === "expense") {
+      return submit("create_expense", {
+        id: genId("exp"),
+        acc_from: v.acc_from,
+        amount: v.amount,
+        category_id: v.category_id,
+        memo: v.memo ?? "",
+        ts: nowTs(),
+      });
+    }
+    return submit("create_transfer", {
+      id: genId("tr"),
+      acc_from: v.acc_from,
+      acc_to: v.acc_to,
+      amount: v.amount,
+      memo: v.memo ?? "",
+      ts: nowTs(),
+    });
   };
+
+  const onEditTxSubmit = async (
+    id: string,
+    changes: EditTxChanges,
+  ): Promise<string | null> => {
+    if (changes.amount !== undefined) {
+      const err = await submit("edit_tx_amount", { id, amount: changes.amount });
+      if (err) return err;
+    }
+    if (changes.memo !== undefined) {
+      const err = await submit("edit_tx_memo", { id, memo: changes.memo });
+      if (err) return err;
+    }
+    if (changes.category_id !== undefined) {
+      const err = await submit("edit_tx_category", {
+        id,
+        category_id: changes.category_id,
+      });
+      if (err) return err;
+    }
+    return null;
+  };
+
+  const confirmAndSubmit = async (msg: string, action: () => Promise<string | null>) => {
+    if (!confirm(msg)) return;
+    // Errors from `submit` already surface in the top-bar status alert via
+    // use-store, so we just fire-and-forget here.
+    await action();
+  };
+
+  // ─── quick file-sync (no modal) ───────────────────────────────────────
+
+  const runFileSync = useCallback(
+    async (targets: string[]) => {
+      if (!opfs || !peerId) return;
+      const selfDir = `/${peerId}`;
+      let transferred = 0;
+      let touchedSelf = false;
+      for (const other of targets) {
+        if (other === peerId) continue;
+        // Re-read selfFiles each iteration — an earlier peer in `targets`
+        // may have pushed new files into selfDir that the next peer needs.
+        const selfFiles = await listPeerFiles(opfs.fs, opfs.path, selfDir);
+        const otherDir = `/${other}`;
+        const otherFiles = await listPeerFiles(opfs.fs, opfs.path, otherDir);
+        const plan = diffPeers(selfFiles, otherFiles, peerId, other, MASTER_ID);
+        await applySyncPlan(opfs.fs, opfs.path, selfDir, otherDir, plan);
+        transferred += plan.aToB.length + plan.bToA.length;
+        if (plan.bToA.length > 0) touchedSelf = true;
+      }
+      return { transferred, touchedSelf, targetCount: targets.length };
+    },
+    [opfs, peerId],
+  );
+
+  const onFileSync = useCallback(async () => {
+    if (!opfs || !peerId) return;
+    setFileSyncing(true);
+    setFileSyncMsg(null);
+    try {
+      const ids = await listPeerDirs(opfs.fs, opfs.path, "/");
+      let targets: string[];
+      if (peerId === MASTER_ID) {
+        targets = ids.filter((id) => id !== MASTER_ID);
+      } else if (ids.includes(MASTER_ID)) {
+        targets = [MASTER_ID];
+      } else {
+        setFileSyncMsg({
+          kind: "warning",
+          message:
+            "no master dir on disk yet — open another tab as 'master' to create it",
+        });
+        return;
+      }
+      if (targets.length === 0) {
+        setFileSyncMsg({
+          kind: "warning",
+          message: "no other peer dirs on disk — open another tab as a different peer",
+        });
+        return;
+      }
+      const r = await runFileSync(targets);
+      if (!r) return;
+      if (r.transferred === 0) {
+        setFileSyncMsg({
+          kind: "success",
+          message:
+            r.targetCount === 1
+              ? `already in sync with ${targets[0]}`
+              : `already in sync with ${r.targetCount} peer(s)`,
+        });
+      } else {
+        setFileSyncMsg({
+          kind: "success",
+          message:
+            r.targetCount === 1
+              ? `synced with ${targets[0]}: ${r.transferred} file(s) moved`
+              : `synced with ${r.targetCount} peer(s): ${r.transferred} file(s) moved`,
+        });
+      }
+      if (r.touchedSelf) void sync();
+    } catch (err) {
+      setFileSyncMsg({
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setFileSyncing(false);
+    }
+  }, [opfs, peerId, runFileSync, sync]);
+
+  // ─── misc ─────────────────────────────────────────────────────────────
 
   const pickPeer = ({ peerId: id, seed }: PeerGateChoice) => {
     sessionStorage.setItem(PEER_KEY, id);
@@ -488,6 +393,19 @@ function App() {
   };
 
   const switchPeer = () => {
+    sessionStorage.removeItem(PEER_KEY);
+    sessionStorage.removeItem(SEED_PENDING_KEY);
+    setPeerId(null);
+  };
+
+  const resetPeer = async () => {
+    if (!peerId) return;
+    const isMaster = peerId === MASTER_ID;
+    const msg = isMaster
+      ? `Reset '${peerId}' (MASTER)?\n\nThis wipes the master dir — every other peer will need to re-sync before they see any data. All master state is lost.`
+      : `Reset peer '${peerId}'?\n\nThis wipes this peer's OPFS dir. Any unsynced local actions are lost; a fresh snapshot will be pulled from the master on next file-sync.`;
+    if (!confirm(msg)) return;
+    await resetPeerDir();
     sessionStorage.removeItem(PEER_KEY);
     sessionStorage.removeItem(SEED_PENDING_KEY);
     setPeerId(null);
@@ -528,26 +446,44 @@ function App() {
         mode={mode}
         status={status}
         pending={pendingCount}
+        fileSyncing={fileSyncing}
         onSync={() => void sync()}
+        onFileSync={() => void onFileSync()}
         onOpenSyncMenu={() => setSyncMenuOpen(true)}
         onSwitchPeer={switchPeer}
+        onResetPeer={() => void resetPeer()}
       />
       <BalanceStrip accounts={accounts} />
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
           <main className="flex min-w-0 flex-1 flex-col overflow-auto p-4">
+            {fileSyncMsg ? (
+              <Alert
+                variant={
+                  fileSyncMsg.kind === "success"
+                    ? "success"
+                    : fileSyncMsg.kind === "warning"
+                      ? "warning"
+                      : "destructive"
+                }
+                className="mb-3 text-xs"
+              >
+                {fileSyncMsg.message}
+              </Alert>
+            ) : null}
             {showSchemaWaiting ? (
               <Alert variant="info" className="mb-3">
-                No schema on disk yet. Open the{" "}
+                No schema on disk yet. Click{" "}
+                <span className="font-mono">File-sync</span> in the top bar to pull
+                from <span className="font-mono">{MASTER_ID}</span>, or open the{" "}
                 <button
                   className="underline underline-offset-2 hover:text-primary"
                   onClick={() => setSyncMenuOpen(true)}
                 >
-                  file-sync menu
+                  peers menu
                 </button>{" "}
-                and sync with <span className="font-mono">{MASTER_ID}</span> to
-                fetch <code>snapshot.db</code> and <code>{MASTER_ID}.jsonl</code>.
+                for detailed control.
               </Alert>
             ) : null}
 
@@ -569,27 +505,44 @@ function App() {
                   transactions={transactions}
                   accounts={accounts}
                   categories={categories}
-                  newOpen={newTxOpen}
-                  setNewOpen={setNewTxOpen}
-                  onNewKind={onNewTxKind}
-                  onEdit={() => openForm(editTx())}
-                  onDelete={() => openForm(deleteTx())}
+                  onNew={() => {
+                    if (accounts.length === 0) {
+                      alert("create an account first");
+                      return;
+                    }
+                    setNewTxOpen(true);
+                  }}
+                  onEdit={(tx) => setEditTx(tx)}
+                  onDelete={(tx) =>
+                    void confirmAndSubmit(`Delete transaction ${tx.id}?`, () =>
+                      submit("delete_transaction", { id: tx.id }),
+                    )
+                  }
                 />
               </TabsContent>
               <TabsContent value="accounts" className="mt-4">
                 <AccountsTab
                   accounts={accounts}
-                  onNew={() => openForm(newAccount)}
-                  onRename={() => openForm(renameAccount())}
-                  onDelete={() => openForm(deleteAccount())}
+                  onNew={() => setForm(newAccountForm)}
+                  onRename={(a) => setForm(renameAccountForm(a))}
+                  onDelete={(a) =>
+                    void confirmAndSubmit(
+                      `Delete account "${a.name}"?\nAccounts with linked transactions can't be deleted.`,
+                      () => submit("delete_account", { id: a.id }),
+                    )
+                  }
                 />
               </TabsContent>
               <TabsContent value="categories" className="mt-4">
                 <CategoriesTab
                   categories={categories}
-                  onNew={() => openForm(newCategory)}
-                  onRename={() => openForm(renameCategory())}
-                  onDelete={() => openForm(deleteCategory())}
+                  onNew={() => setForm(newCategoryForm)}
+                  onRename={(c) => setForm(renameCategoryForm(c))}
+                  onDelete={(c) =>
+                    void confirmAndSubmit(`Delete category "${c.name}"?`, () =>
+                      submit("delete_category", { id: c.id }),
+                    )
+                  }
                 />
               </TabsContent>
             </Tabs>
@@ -618,11 +571,25 @@ function App() {
         />
       </div>
 
-      <Wizard
+      <FormDialog
         key={form?.title ?? "closed"}
         spec={form}
         open={form !== null}
         onClose={() => setForm(null)}
+      />
+      <NewTransactionDialog
+        open={newTxOpen}
+        onClose={() => setNewTxOpen(false)}
+        accounts={accounts}
+        categories={categories}
+        onSubmit={onNewTxSubmit}
+      />
+      <EditTransactionDialog
+        tx={editTx}
+        open={editTx !== null}
+        onClose={() => setEditTx(null)}
+        categories={categories}
+        onSubmit={onEditTxSubmit}
       />
       <SyncMenu
         open={syncMenuOpen}

@@ -5,7 +5,7 @@ import {
   newAccount,
   newCategory,
   newIncome,
-  newExpense,
+  quickFileSync,
   waitSeedDone,
 } from "./helpers";
 
@@ -25,12 +25,7 @@ test.describe("cross-tab replication", () => {
     await bob.locator("#custom-peer").fill("bob");
     await bob.locator('button:has-text("Open")').click();
     await expect(bob.getByText(/no schema on disk yet/i)).toBeVisible();
-    await bob
-      .getByRole("button", { name: "File-sync", exact: true })
-      .click();
-    await bob.locator('div[role=dialog] button:has-text("Sync")').last().click();
-    await expect(bob.getByText(/transferred/)).toBeVisible({ timeout: 30_000 });
-    await bob.locator('div[role=dialog] button:has-text("Close")').first().click();
+    await quickFileSync(bob);
     await expect(bob.getByText(/Transactions\s*\(\s*15\s*\)/)).toBeVisible({
       timeout: 30_000,
     });
@@ -50,10 +45,7 @@ test.describe("cross-tab replication", () => {
 
     // Bob file-syncs again — pushes bob.jsonl to alice's dir; alice auto-
     // syncs via the cross-tab BroadcastChannel watcher.
-    await bob.getByRole("button", { name: "File-sync", exact: true }).click();
-    await bob.locator('div[role=dialog] button:has-text("Sync")').last().click();
-    await expect(bob.getByText(/transferred/)).toBeVisible({ timeout: 30_000 });
-    await bob.locator('div[role=dialog] button:has-text("Close")').first().click();
+    await quickFileSync(bob);
 
     // Alice's balance and transactions reflect bob's income after auto-sync.
     await expect(page.getByText("from-bob").first()).toBeVisible({
@@ -76,10 +68,7 @@ test.describe("cross-tab replication", () => {
     await expect(bob.getByText("Choose a peer for this tab")).toBeVisible();
     await bob.locator("#custom-peer").fill("bob");
     await bob.locator('button:has-text("Open")').click();
-    await bob.getByRole("button", { name: "File-sync", exact: true }).click();
-    await bob.locator('div[role=dialog] button:has-text("Sync")').last().click();
-    await expect(bob.getByText(/transferred/)).toBeVisible({ timeout: 30_000 });
-    await bob.locator('div[role=dialog] button:has-text("Close")').first().click();
+    await quickFileSync(bob);
     await expect(bob.getByText("Checking").first()).toBeVisible({
       timeout: 30_000,
     });
@@ -88,10 +77,7 @@ test.describe("cross-tab replication", () => {
     await newCategory(page, "AfterBob", "expense");
 
     // Bob file-syncs; should see the new category.
-    await bob.getByRole("button", { name: "File-sync", exact: true }).click();
-    await bob.locator('div[role=dialog] button:has-text("Sync")').last().click();
-    await expect(bob.getByText(/transferred/)).toBeVisible({ timeout: 30_000 });
-    await bob.locator('div[role=dialog] button:has-text("Close")').first().click();
+    await quickFileSync(bob);
     await expect(bob.getByText("AfterBob").first()).toBeVisible({
       timeout: 30_000,
     });

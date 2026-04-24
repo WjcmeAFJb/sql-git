@@ -38,6 +38,11 @@ export type UseStore = {
   resolveConflict: (r: Resolution) => void;
   sync: () => Promise<void>;
   submit: (name: string, params: unknown) => Promise<string | null>;
+  /** Close the store (if any) and wipe the current peer's OPFS dir. Callers
+   *  then typically flip back to the peer gate so the next open starts from
+   *  a clean slate — useful for recovering from file-sync lag errors or any
+   *  other inconsistency in the local dir. */
+  resetPeerDir: () => Promise<void>;
   bump: () => void;
   tick: number; // changes whenever store state is mutated — forces re-reads
 };
@@ -177,6 +182,30 @@ export function useStore(peerId: string | null): UseStore {
     setMode("syncing");
   }, []);
 
+  const resetPeerDir = useCallback(async () => {
+    if (!peerId) return;
+    storeRef.current?.close();
+    storeRef.current = null;
+    setStore(null);
+    setConflict(null);
+    setHead(0);
+    if (sharedOpfs) {
+      try {
+        const fs = (await sharedOpfs).fs;
+        if (!fs.remove) throw new Error("OPFS adapter missing remove()");
+        await fs.remove(`/${peerId}`);
+      } catch (err) {
+        setStatus({
+          kind: "error",
+          message: `reset-error: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        return;
+      }
+    }
+    setStatus({ kind: "info", message: "peer dir wiped" });
+    setMode("opening");
+  }, [peerId]);
+
   // Boot: init OPFS + open Store for the chosen peer.
   useEffect(() => {
     if (!peerId) return;
@@ -266,6 +295,7 @@ export function useStore(peerId: string | null): UseStore {
     resolveConflict,
     sync,
     submit,
+    resetPeerDir,
     bump,
     tick,
   };

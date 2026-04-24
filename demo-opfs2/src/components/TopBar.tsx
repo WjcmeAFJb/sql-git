@@ -1,4 +1,11 @@
-import { Loader2, RefreshCcw, LogOut, HardDrive } from "lucide-react";
+import {
+  Loader2,
+  RefreshCcw,
+  LogOut,
+  HardDrive,
+  FolderOpen,
+  Eraser,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert } from "@/components/ui/alert";
@@ -12,9 +19,12 @@ export function TopBar({
   mode,
   status,
   pending,
+  fileSyncing,
   onSync,
+  onFileSync,
   onOpenSyncMenu,
   onSwitchPeer,
+  onResetPeer,
 }: {
   peerId: string;
   masterId: string;
@@ -22,9 +32,12 @@ export function TopBar({
   mode: Mode;
   status: Status;
   pending: number;
+  fileSyncing: boolean;
   onSync: () => void;
+  onFileSync: () => void;
   onOpenSyncMenu: () => void;
   onSwitchPeer: () => void;
+  onResetPeer: () => void;
 }) {
   const alertVariant =
     status.kind === "success"
@@ -96,11 +109,44 @@ export function TopBar({
             variant="outline"
             onClick={onSync}
             disabled={mode === "syncing" || mode === "opening"}
+            title="Re-read this peer's logs and converge in-memory state"
           >
             <RefreshCcw className="h-3 w-3" /> Sync
           </Button>
-          <Button size="sm" variant="outline" onClick={onOpenSyncMenu}>
-            <HardDrive className="h-3 w-3" /> File-sync
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onFileSync}
+            disabled={fileSyncing || mode === "opening"}
+            title={
+              peerId === masterId
+                ? "Push/pull files between master and every known peer dir"
+                : "Push/pull files between this peer dir and the master dir"
+            }
+          >
+            {fileSyncing ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <HardDrive className="h-3 w-3" />
+            )}{" "}
+            File-sync
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onOpenSyncMenu}
+            title="Open the multi-peer file-sync menu"
+          >
+            <FolderOpen className="h-3 w-3" /> Peers…
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onResetPeer}
+            title="Wipe this peer's OPFS dir and return to the peer gate — useful if file-sync lag or corruption blocks open"
+            className="hover:text-destructive"
+          >
+            <Eraser className="h-3 w-3" /> Reset
           </Button>
           <Button size="sm" variant="ghost" onClick={onSwitchPeer} title="Switch peer">
             <LogOut className="h-3 w-3" /> Switch

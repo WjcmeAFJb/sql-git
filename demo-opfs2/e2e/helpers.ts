@@ -108,39 +108,39 @@ export async function openTab(
   await page.locator(`button[role=tab]:has-text("${tab}")`).click();
 }
 
-// ─── wizard helpers ─────────────────────────────────────────────────────
+// ─── form + select helpers ──────────────────────────────────────────────
 
-async function fillWizardInput(page: Page, value: string): Promise<void> {
-  await page.locator("#wizard-field").fill(value);
-}
-
-async function pickWizardOption(page: Page, label: string): Promise<void> {
-  await page.locator("#wizard-field").click();
+async function pickOption(
+  page: Page,
+  triggerSelector: string,
+  optionLabel: string,
+): Promise<void> {
+  await page.locator(triggerSelector).click();
   await expect(
-    page.locator(`div[role=option]:has-text("${label}")`).first(),
+    page.locator(`div[role=option]:has-text("${optionLabel}")`).first(),
   ).toBeVisible();
   await page
-    .locator(`div[role=option]:has-text("${label}")`)
+    .locator(`div[role=option]:has-text("${optionLabel}")`)
     .first()
     .click();
 }
 
-async function wizardNext(page: Page): Promise<void> {
-  await page.locator('button:has-text("Next")').click();
+/** Find a list item by one of its visible text fragments (row text). */
+function row(page: Page, match: string | RegExp) {
+  return page.locator(`main ul > li`).filter({ hasText: match }).first();
 }
 
-async function wizardSubmit(page: Page): Promise<void> {
-  await page.locator('button:has-text("Submit")').click();
-}
-
-// ─── CRUD ───────────────────────────────────────────────────────────────
+// ─── accounts CRUD ──────────────────────────────────────────────────────
 
 export async function newAccount(page: Page, name: string): Promise<void> {
   await openTab(page, "Accounts");
-  await page.locator('button:has-text("New")').first().click();
+  await page
+    .locator('main button:has-text("New")')
+    .first()
+    .click();
   await expect(page.getByText("New account")).toBeVisible();
-  await fillWizardInput(page, name);
-  await wizardSubmit(page);
+  await page.locator("#form-field-name").fill(name);
+  await page.locator('button:has-text("Create")').click();
   await expect(page.getByText(name).first()).toBeVisible();
 }
 
@@ -150,19 +150,29 @@ export async function renameAccount(
   to: string,
 ): Promise<void> {
   await openTab(page, "Accounts");
-  await page.locator('button:has-text("Rename")').first().click();
-  await pickWizardOption(page, from);
-  await wizardNext(page);
-  await fillWizardInput(page, to);
-  await wizardSubmit(page);
+  await row(page, from).locator('button[title="Rename"]').click();
+  await expect(page.getByText(`Rename ${from}`)).toBeVisible();
+  await page.locator("#form-field-name").fill(to);
+  await page.locator('button:has-text("Save")').click();
 }
 
 export async function deleteAccount(page: Page, name: string): Promise<void> {
   await openTab(page, "Accounts");
-  await page.locator('button:has-text("Delete")').first().click();
-  await pickWizardOption(page, name);
-  await wizardSubmit(page);
+  page.once("dialog", (d) => void d.accept());
+  await row(page, name).locator('button[title="Delete"]').click();
 }
+
+/** Variant that dismisses the confirm dialog — the delete is aborted. */
+export async function attemptDeleteAccountDismiss(
+  page: Page,
+  name: string,
+): Promise<void> {
+  await openTab(page, "Accounts");
+  page.once("dialog", (d) => void d.dismiss());
+  await row(page, name).locator('button[title="Delete"]').click();
+}
+
+// ─── categories CRUD ────────────────────────────────────────────────────
 
 export async function newCategory(
   page: Page,
@@ -170,12 +180,20 @@ export async function newCategory(
   kind: "income" | "expense" | "both",
 ): Promise<void> {
   await openTab(page, "Categories");
-  await page.locator('button:has-text("New")').first().click();
+  await page
+    .locator('main button:has-text("New")')
+    .first()
+    .click();
   await expect(page.getByText("New category")).toBeVisible();
-  await fillWizardInput(page, name);
-  await wizardNext(page);
-  await pickWizardOption(page, kind);
-  await wizardSubmit(page);
+  await page.locator("#form-field-name").fill(name);
+  await pickOption(page, "#form-field-kind", kind);
+  await page.locator('button:has-text("Create")').click();
+  // Wait for the reactive query to reflect the new category before the
+  // caller moves on — otherwise a follow-up dialog (e.g. newIncome) may
+  // snapshot stale `categories` props and miss the just-created row.
+  await expect(
+    page.locator('main ul > li').filter({ hasText: name }).first(),
+  ).toBeVisible();
 }
 
 export async function renameCategory(
@@ -184,89 +202,121 @@ export async function renameCategory(
   to: string,
 ): Promise<void> {
   await openTab(page, "Categories");
-  await page.locator('button:has-text("Rename")').first().click();
-  await pickWizardOption(page, from);
-  await wizardNext(page);
-  await fillWizardInput(page, to);
-  await wizardSubmit(page);
+  await row(page, from).locator('button[title="Rename"]').click();
+  await expect(page.getByText(`Rename ${from}`)).toBeVisible();
+  await page.locator("#form-field-name").fill(to);
+  await page.locator('button:has-text("Save")').click();
 }
 
 export async function deleteCategory(page: Page, name: string): Promise<void> {
   await openTab(page, "Categories");
-  await page.locator('button:has-text("Delete")').first().click();
-  await pickWizardOption(page, name);
-  await wizardSubmit(page);
+  page.once("dialog", (d) => void d.accept());
+  await row(page, name).locator('button[title="Delete"]').click();
+}
+
+// ─── transactions CRUD ─────────────────────────────────────────────────
+
+async function openNewTxDialog(page: Page): Promise<void> {
+  await openTab(page, "Transactions");
+  await page.locator('main button:has-text("New")').first().click();
+  await expect(page.getByText("New transaction")).toBeVisible();
+}
+
+async function submitNewTx(page: Page): Promise<void> {
+  await page.locator('div[role=dialog] button:has-text("Create")').click();
+  await expect(page.getByText("New transaction")).not.toBeVisible();
 }
 
 export async function newIncome(
   page: Page,
   opts: { amount: number; account: string; category?: string; memo?: string },
 ): Promise<void> {
-  await openTab(page, "Transactions");
-  await page.locator('button:has-text("New")').first().click();
-  await expect(page.getByText("New transaction")).toBeVisible();
-  await page.locator('button:has-text("Income")').click();
-  await expect(page.getByText("New income")).toBeVisible();
-  await fillWizardInput(page, String(opts.amount));
-  await wizardNext(page);
-  await pickWizardOption(page, opts.account);
-  await wizardNext(page);
-  if (opts.category) await pickWizardOption(page, opts.category);
-  await wizardNext(page);
-  if (opts.memo) await fillWizardInput(page, opts.memo);
-  await wizardSubmit(page);
+  await openNewTxDialog(page);
+  await page.locator('[data-testid="ntx-kind-income"]').click();
+  await page.locator("#ntx-amount").fill(String(opts.amount));
+  await pickOption(page, "#ntx-acc-to", opts.account);
+  if (opts.category) await pickOption(page, "#ntx-category", opts.category);
+  if (opts.memo) await page.locator("#ntx-memo").fill(opts.memo);
+  await submitNewTx(page);
 }
 
 export async function newExpense(
   page: Page,
   opts: { amount: number; account: string; category?: string; memo?: string },
 ): Promise<void> {
-  await openTab(page, "Transactions");
-  await page.locator('button:has-text("New")').first().click();
-  await expect(page.getByText("New transaction")).toBeVisible();
-  await page.locator('button:has-text("Expense")').click();
-  await expect(page.getByText("New expense")).toBeVisible();
-  await fillWizardInput(page, String(opts.amount));
-  await wizardNext(page);
-  await pickWizardOption(page, opts.account);
-  await wizardNext(page);
-  if (opts.category) await pickWizardOption(page, opts.category);
-  await wizardNext(page);
-  if (opts.memo) await fillWizardInput(page, opts.memo);
-  await wizardSubmit(page);
+  await openNewTxDialog(page);
+  await page.locator('[data-testid="ntx-kind-expense"]').click();
+  await page.locator("#ntx-amount").fill(String(opts.amount));
+  await pickOption(page, "#ntx-acc-from", opts.account);
+  if (opts.category) await pickOption(page, "#ntx-category", opts.category);
+  if (opts.memo) await page.locator("#ntx-memo").fill(opts.memo);
+  await submitNewTx(page);
 }
 
 export async function newTransfer(
   page: Page,
   opts: { amount: number; from: string; to: string; memo?: string },
 ): Promise<void> {
+  await openNewTxDialog(page);
+  await page.locator('[data-testid="ntx-kind-transfer"]').click();
+  await page.locator("#ntx-amount").fill(String(opts.amount));
+  await pickOption(page, "#ntx-acc-from", opts.from);
+  await pickOption(page, "#ntx-acc-to", opts.to);
+  if (opts.memo) await page.locator("#ntx-memo").fill(opts.memo);
+  await submitNewTx(page);
+}
+
+/** Edit the most recent transaction matching `match` in its row text. */
+export async function editTransaction(
+  page: Page,
+  match: string | RegExp,
+  opts: { amount?: number; memo?: string; category?: string },
+): Promise<void> {
   await openTab(page, "Transactions");
-  await page.locator('button:has-text("New")').first().click();
-  await expect(page.getByText("New transaction")).toBeVisible();
-  await page.locator('button:has-text("Transfer")').click();
-  await expect(page.getByText("New transfer")).toBeVisible();
-  await fillWizardInput(page, String(opts.amount));
-  await wizardNext(page);
-  await pickWizardOption(page, opts.from);
-  await wizardNext(page);
-  await pickWizardOption(page, opts.to);
-  await wizardNext(page);
-  if (opts.memo) await fillWizardInput(page, opts.memo);
-  await wizardSubmit(page);
+  await row(page, match).locator('button[title="Edit"]').click();
+  await expect(page.getByText(/^Edit /)).toBeVisible();
+  if (opts.amount !== undefined) {
+    await page.locator("#etx-amount").fill(String(opts.amount));
+  }
+  if (opts.memo !== undefined) {
+    await page.locator("#etx-memo").fill(opts.memo);
+  }
+  if (opts.category !== undefined) {
+    await pickOption(page, "#etx-category", opts.category);
+  }
+  await page.locator('div[role=dialog] button:has-text("Save")').click();
+}
+
+export async function deleteTransaction(
+  page: Page,
+  match: string | RegExp,
+): Promise<void> {
+  await openTab(page, "Transactions");
+  page.once("dialog", (d) => void d.accept());
+  await row(page, match).locator('button[title="Delete"]').click();
 }
 
 // ─── file-sync ──────────────────────────────────────────────────────────
 
-export async function openFileSync(page: Page): Promise<void> {
-  // The schema-waiting alert on non-master peers has a lower-case
-  // "file-sync menu" link — disambiguate to the top-bar button.
+/** Run the quick top-bar file-sync (no modal). Matches both non-master
+ *  "synced with master…" and master "synced with N peer(s)…" toasts,
+ *  plus the already-in-sync case. */
+export async function quickFileSync(page: Page): Promise<void> {
   await page
     .getByRole("button", { name: "File-sync", exact: true })
     .click();
+  await expect(
+    page.getByText(/(^|:\s*)(synced with|already in sync with) /),
+  ).toBeVisible({ timeout: 30_000 });
+}
+
+/** Open the detailed multi-peer dialog via the "Peers…" button. */
+export async function openPeersMenu(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Peers…", exact: true }).click();
   await expect(page.getByText("File-sync operations")).toBeVisible();
 }
 
-export async function runFileSync(page: Page): Promise<void> {
+export async function runPeersMenuSync(page: Page): Promise<void> {
   await page
     .locator('div[role=dialog] button:has-text("Sync")')
     .last()
@@ -276,7 +326,7 @@ export async function runFileSync(page: Page): Promise<void> {
   });
 }
 
-export async function closeFileSync(page: Page): Promise<void> {
+export async function closePeersMenu(page: Page): Promise<void> {
   // Dialog's top-right `X` has aria-label="Close"; use the footer button.
   await page
     .locator('div[role=dialog] button:has-text("Close")')
