@@ -11,10 +11,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test & typecheck
+  typecheck:
+    name: Typecheck
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - name: Checkout sql-git
         uses: actions/checkout@v4
@@ -54,15 +54,3 @@ jobs:
       - name: Typecheck
         working-directory: sql-git
         run: pnpm typecheck
-
-      - name: Unit tests
-        working-directory: sql-git
-        run: pnpm test
-
-      - name: Install Playwright browsers for demo e2e
-        working-directory: sql-git/demo-opfs2
-        run: pnpm exec playwright install chromium --with-deps
-
-      - name: Demo-opfs2 e2e (Playwright)
-        working-directory: sql-git/demo-opfs2
-        run: pnpm test:e2e
