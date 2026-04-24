@@ -4,13 +4,17 @@ hero:
   name: sql-git
   text: Distributed SQLite with per-peer action logs
   tagline: Git's shape, SQLite's storage, any file syncer's transport. Offline-first apps that converge on every device.
+  image:
+    light: /hero-light.svg
+    dark: /hero-dark.svg
+    alt: Three peer action logs rebasing onto a SQLite master
   actions:
     - theme: brand
       text: Get started
       link: /guide/getting-started
     - theme: alt
       text: Live demo
-      link: /sql-git/demo/
+      link: /demo/
     - theme: alt
       text: GitHub
       link: https://github.com/WjcmeAFJb/sql-git

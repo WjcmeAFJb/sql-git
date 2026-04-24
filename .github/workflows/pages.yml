@@ -1,0 +1,98 @@
+name: pages
+
+# Rebuild + redeploy Pages when docs or the demo change on master, without
+# cutting a new release. Also available as a manual dispatch for ad-hoc
+# redeploys (e.g. after fixing only frontmatter).
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "docs/**"
+      - "demo-opfs2/**"
+      - "src/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build docs + demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout sql-git
+        uses: actions/checkout@v4
+        with:
+          path: sql-git
+
+      - name: Checkout sql-reactive-orm sibling
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sql-reactive-orm
+          path: sql-reactive-orm
+
+      - name: Checkout sql-read-tracking sibling
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sql-read-tracking
+          path: sql-read-tracking
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: sql-git/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: sql-git
+        run: pnpm install --frozen-lockfile
+
+      - name: Build VitePress docs
+        working-directory: sql-git/docs
+        env:
+          DOCS_BASE: /${{ github.event.repository.name }}/
+        run: pnpm build
+
+      - name: Build demo-opfs2
+        working-directory: sql-git/demo-opfs2
+        run: pnpm build --base /${{ github.event.repository.name }}/demo/
+
+      - name: Assemble Pages artifact
+        working-directory: sql-git
+        run: |
+          mkdir -p pages-dist
+          cp -R docs/.vitepress/dist/. pages-dist/
+          mkdir -p pages-dist/demo
+          cp -R demo-opfs2/dist/. pages-dist/demo/
+          cp demo-opfs2/dist/index.html pages-dist/demo/404.html || true
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: sql-git/pages-dist
+
+  deploy:
+    name: Deploy GitHub Pages
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    timeout-minutes: 10
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

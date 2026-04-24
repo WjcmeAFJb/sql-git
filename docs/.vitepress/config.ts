@@ -30,7 +30,7 @@ export default defineConfig({
       { text: "Guide", link: "/guide/getting-started" },
       { text: "Concepts", link: "/concepts/actions" },
       { text: "API", link: "/api/store" },
-      { text: "Demo", link: `${base}demo/`, target: "_blank" },
+      { text: "Demo", link: "/demo/", target: "_blank" },
       {
         text: "GitHub",
         link: "https://github.com/WjcmeAFJb/sql-git",
