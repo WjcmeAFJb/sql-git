@@ -2,6 +2,7 @@
   "name": "sql-git",
   "version": "0.1.0",
   "description": "Distributed SQLite storage with per-peer logs, master squashing, and rebase-style conflict resolution.",
+  "license": "LGPL-3.0-or-later",
   "repository": {
     "type": "git",
     "url": "https://github.com/WjcmeAFJb/sql-git.git"
@@ -34,6 +35,8 @@
     "demo/tracker.tsx",
     "demo/syncer.ts",
     "LICENSE",
+    "COPYING",
+    "COPYING.LESSER",
     "README.md"
   ],
   "scripts": {

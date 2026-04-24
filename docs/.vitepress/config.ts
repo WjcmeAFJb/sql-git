@@ -81,7 +81,8 @@ export default defineConfig({
       },
     ],
     footer: {
-      message: "Released under the project's terms — see repository LICENSE.",
+      message:
+        "Released under LGPL-3.0-or-later. Source, full license text, and issue tracker on GitHub.",
       copyright: "© 2026 sql-git contributors",
     },
   },
