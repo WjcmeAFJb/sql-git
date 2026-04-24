@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Users, UserPlus } from "lucide-react";
+import { Users, UserPlus, Sprout } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,18 +11,22 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 const MASTER_ID = "alice";
 const DEFAULT_SUGGESTIONS = ["alice", "bob", "charlie"];
+
+export type PeerGateChoice = { peerId: string; seed: boolean };
 
 export function PeerGate({
   onSelect,
   knownPeers,
 }: {
-  onSelect: (peerId: string) => void;
+  onSelect: (choice: PeerGateChoice) => void;
   knownPeers: string[];
 }) {
   const [custom, setCustom] = useState("");
+  const [seed, setSeed] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Merge suggested + known peers; known first.
@@ -47,7 +51,7 @@ export function PeerGate({
       setError("use lowercase letters/digits, dots, dashes, underscores");
       return;
     }
-    onSelect(name);
+    onSelect({ peerId: name, seed });
   };
 
   return (
@@ -131,6 +135,34 @@ export function PeerGate({
               </p>
             )}
           </div>
+
+          <label
+            className={cn(
+              "flex cursor-pointer items-start gap-3 rounded-md border p-3 text-sm transition-colors",
+              seed
+                ? "border-[hsl(var(--success))]/50 bg-[hsl(var(--success))]/10"
+                : "border-input hover:bg-accent",
+            )}
+          >
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 cursor-pointer accent-[hsl(var(--success))]"
+              checked={seed}
+              onChange={(e) => setSeed(e.target.checked)}
+            />
+            <div className="flex-1">
+              <div className="flex items-center gap-2 font-medium">
+                <Sprout className="h-4 w-4 text-[hsl(var(--success))]" />
+                Seed with sample data
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Creates 2 accounts, 6 categories, and ~15 transactions via
+                regular submits, so they replicate like anything else. Safe to
+                check on a non-master too — the actions stay pending until a
+                file-sync hands them to <span className="font-mono">{MASTER_ID}</span>.
+              </p>
+            </div>
+          </label>
         </div>
       </DialogContent>
     </Dialog>

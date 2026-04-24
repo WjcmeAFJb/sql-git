@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert } from "@/components/ui/alert";
-import { PeerGate, MASTER_ID } from "@/components/PeerGate";
+import { PeerGate, MASTER_ID, type PeerGateChoice } from "@/components/PeerGate";
 import { TopBar } from "@/components/TopBar";
 import { BalanceStrip } from "@/components/BalanceStrip";
 import { AccountsTab } from "@/components/AccountsTab";
@@ -21,11 +21,13 @@ import { useOrm } from "@/hooks/use-orm";
 import { useBankQuery } from "@/hooks/use-sql-query";
 import { listPeerDirs } from "@/lib/peer-dirs";
 import { genId, nowTs } from "@/lib/id";
+import { seedBank } from "@/lib/seed";
 import type { AccountRow, CategoryRow, TransactionRow } from "@/lib/orm-entities";
 
 type Tab = "transactions" | "accounts" | "categories";
 
 const PEER_KEY = "sql-git:opfs2:peer";
+const SEED_PENDING_KEY = "sql-git:opfs2:seedPending";
 
 /**
  * Reads from the reactive ORM are tracked via MobX observables. Leaf
@@ -478,15 +480,36 @@ function App() {
     setForm(f);
   };
 
-  const pickPeer = (id: string) => {
+  const pickPeer = ({ peerId: id, seed }: PeerGateChoice) => {
     sessionStorage.setItem(PEER_KEY, id);
+    if (seed) sessionStorage.setItem(SEED_PENDING_KEY, "1");
+    else sessionStorage.removeItem(SEED_PENDING_KEY);
     setPeerId(id);
   };
 
   const switchPeer = () => {
     sessionStorage.removeItem(PEER_KEY);
+    sessionStorage.removeItem(SEED_PENDING_KEY);
     setPeerId(null);
   };
+
+  // Seed once per tab lifetime: consume the flag as soon as the store is
+  // open AND the schema is in place (master is auto-bootstrapped on open;
+  // a non-master needs a file-sync first, after which this effect fires).
+  // A ref guards against concurrent re-runs during the async seed burst.
+  const seedingRef = useRef(false);
+  useEffect(() => {
+    if (!store || !tablesExist) return;
+    if (sessionStorage.getItem(SEED_PENDING_KEY) !== "1") return;
+    if (seedingRef.current) return;
+    seedingRef.current = true;
+    sessionStorage.removeItem(SEED_PENDING_KEY);
+    (async () => {
+      const err = await seedBank(submit);
+      seedingRef.current = false;
+      if (err) console.error("seed failed:", err);
+    })();
+  }, [store, tablesExist, submit]);
 
   // ─── render ────────────────────────────────────────────────────────────
 
